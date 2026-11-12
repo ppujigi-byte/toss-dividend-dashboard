@@ -1,0 +1,18 @@
+# 개인 계좌 DB · 암호화 API 키 · 백업본 절대 제외
+data/
+*.db
+*.db-wal
+*.db-shm
+encrypted_config.json
+
+# 개인 거래내역서 PDF 원본 절대 제외 (빈 폴더 유지용 .gitkeep만 허용)
+pdfs/*
+!pdfs/.gitkeep
+
+# 로컬 컴파일 바이너리 · 파이썬 캐시 · OS 임시파일 제외
+pdf_extractor_bin
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+*.env
