@@ -538,7 +538,7 @@
         <!-- 탭 2: 매수·매도 체결 내역 (100% 열람 전용 — 입력/수정/주문 기능 없음) -->
         <div id="dtabPanelTrades" class="hidden">
           <div class="security-callout" style="margin-bottom:12px;padding:10px 14px;font-size:12.5px;">
-            🛡️ <strong>100% 열람 전용 거래 원장:</strong> 거래내역서 PDF 확정 원장(타사대체입고는 입고일 단가 매수로 반영, 분할·병합은 원가 보존)과 기준일 이후 Open API 체결 내역만 표시합니다.
+            🛡️ <strong>100% 열람 전용 거래 원장 (결제일 · 체결일 안내):</strong> 거래내역서 PDF 구간은 증권사 원장 <strong>결제일(체결 후 1~2영업일, 예: 10월 말 체결 → 11월 초 결제)</strong> 기준이며, 기준일 이후 Open API 증분 동기화 내역은 <strong>체결일</strong> 기준으로 중복 없이 이어서 표시됩니다.
           </div>
 
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
@@ -555,7 +555,7 @@
           <table class="history-table">
             <thead>
               <tr>
-                <th>거래일 · 구분</th>
+                <th>거래일(결제·체결) · 구분</th>
                 <th>수량 · 단가</th>
                 <th>거래금액</th>
                 <th>수수료 · 세금</th>

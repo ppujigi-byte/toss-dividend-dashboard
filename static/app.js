@@ -1572,12 +1572,19 @@
         .map((t) => {
           const bInfo = getTradeBadgeInfo(t);
           const rowRealized = exTax ? t.realizedPnlNet : t.realizedPnlGross;
+          const dateBasisHtml =
+            t.source === "API"
+              ? `<span style="font-size:11px;color:var(--toss-blue);font-weight:700;">체결일</span>`
+              : String(t.source || "").startsWith("PDF")
+              ? `<span style="font-size:11px;color:var(--text-muted);font-weight:600;">결제일</span>`
+              : "";
           return `
             <tr>
               <td>
                 <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
                   <span class="badge ${bInfo.cls}">${bInfo.label}</span>
                   <span style="font-weight:700;">${escapeHtml(t.trade_date)}</span>
+                  ${dateBasisHtml}
                 </div>
                 <div class="cell-sub">${escapeHtml(t.memo || t.source)}</div>
               </td>

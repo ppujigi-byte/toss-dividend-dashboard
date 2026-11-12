@@ -1011,6 +1011,70 @@ def import_pdf_ledger_to_db(pdf_dir: Path = PDF_DIR, target_account_key: Optiona
             [(acc_key, *dv) for dv in dividend_records],
         )
 
+        # 새 PDF 기준일(max_trade_date_iso) 이하에 이미 결제 반영된 기존 API 체결 및 AUTO 배당 자동 정리 (중복 원천 방지)
+        if max_trade_date_iso:
+            conn.execute(
+                "DELETE FROM dividends WHERE account_key = ? AND source = 'AUTO' AND pay_date <= ?",
+                (acc_key, max_trade_date_iso),
+            )
+            try:
+                cutoff_dt_obj = datetime.date.fromisoformat(max_trade_date_iso[:10])
+                rem = 0
+                hard_dt = cutoff_dt_obj
+                while rem < 5:
+                    hard_dt -= datetime.timedelta(days=1)
+                    if hard_dt.weekday() < 5:
+                        rem += 1
+                hard_cutoff_iso = hard_dt.isoformat()
+                conn.execute(
+                    "DELETE FROM trades WHERE account_key = ? AND source = 'API' AND trade_date <= ?",
+                    (acc_key, hard_cutoff_iso),
+                )
+                rem_api_rows = [
+                    dict(r)
+                    for r in conn.execute(
+                        "SELECT id, symbol, side, trade_date, quantity, price, currency FROM trades WHERE account_key = ? AND source = 'API' AND trade_date <= ? ORDER BY trade_date ASC, id ASC",
+                        (acc_key, max_trade_date_iso),
+                    ).fetchall()
+                ]
+                if rem_api_rows:
+                    b_from_iso = (cutoff_dt_obj - datetime.timedelta(days=12)).isoformat()
+                    b_pdf_rows = [
+                        dict(r)
+                        for r in conn.execute(
+                            "SELECT id, symbol, side, trade_date, quantity, price FROM trades WHERE account_key = ? AND source = 'PDF' AND trade_date >= ? ORDER BY trade_date ASC, id ASC",
+                            (acc_key, b_from_iso),
+                        ).fetchall()
+                    ]
+                    used_pdf_ids = set()
+                    api_ids_to_delete: List[int] = []
+                    for ar in rem_api_rows:
+                        a_dt = datetime.date.fromisoformat(str(ar["trade_date"])[:10])
+                        a_qty = float(ar["quantity"])
+                        a_price = float(ar["price"])
+                        q_tol = max(1e-5, a_qty * 1e-4)
+                        p_tol = max(0.03 if ar["currency"] == "USD" else 10.0, a_price * 0.008) if a_price > 0 else 0.0
+                        matched_pr = next(
+                            (
+                                pr
+                                for pr in b_pdf_rows
+                                if pr["id"] not in used_pdf_ids
+                                and pr["symbol"] == ar["symbol"]
+                                and pr["side"] == ar["side"]
+                                and 0 <= (datetime.date.fromisoformat(str(pr["trade_date"])[:10]) - a_dt).days <= 6
+                                and abs(float(pr["quantity"]) - a_qty) <= q_tol
+                                and (a_price <= 0 or float(pr["price"]) <= 0 or abs(float(pr["price"]) - a_price) <= p_tol)
+                            ),
+                            None,
+                        )
+                        if matched_pr:
+                            used_pdf_ids.add(matched_pr["id"])
+                            api_ids_to_delete.append(int(ar["id"]))
+                    if api_ids_to_delete:
+                        conn.executemany("DELETE FROM trades WHERE id = ?", [(i,) for i in api_ids_to_delete])
+            except Exception:
+                pass
+
         if not has_live_api_holdings:
             conn.execute("DELETE FROM holdings_snapshot WHERE account_key = ?", (acc_key,))
             conn.executemany(
