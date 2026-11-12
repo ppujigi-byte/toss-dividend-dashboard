@@ -378,8 +378,8 @@
 
         <!-- 개별 종목별 월별·연도별 배당금 추이 탐색 카드 -->
         <div id="stockMonthlyExplorerCard" class="growth-chart-card" style="margin-top:18px;background:#fcfdff;">
-          <div class="monthly-toolbar">
-            <div>
+          <div class="monthly-header-top">
+            <div style="min-width:0;flex:1;">
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                 <div id="mainMonthlyCardTitle" class="growth-card-title">📊 개별 종목 월별 배당금 그래프</div>
                 <span id="mainMonthlyStockBadge" class="badge badge-held">종목 선택</span>
@@ -387,24 +387,27 @@
               </div>
               <div id="mainMonthlyMetaSub" class="growth-card-sub">종목을 선택하면 월별·연도별 배당금 수령 추이와 평균을 확인할 수 있습니다.</div>
             </div>
+            <button type="button" id="openSelectedMonthlyDetailBtn" class="btn btn-outline btn-sm" style="padding:6px 11px;font-size:12px;flex-shrink:0;">종목 상세 ↗</button>
+          </div>
+
+          <div class="monthly-controls-bar">
+            <div class="monthly-stock-nav">
+              <button type="button" id="prevMonthlyStockBtn" class="btn btn-outline btn-sm" style="padding:6px 9px;" title="이전 배당 종목">◀</button>
+              <select id="mainMonthlyStockSelect" class="form-select monthly-stock-select"></select>
+              <button type="button" id="nextMonthlyStockBtn" class="btn btn-outline btn-sm" style="padding:6px 9px;" title="다음 배당 종목">▶</button>
+            </div>
 
             <div class="monthly-controls-right">
-              <div style="display:inline-flex;align-items:center;gap:4px;">
-                <button type="button" id="prevMonthlyStockBtn" class="btn btn-outline btn-sm" style="padding:6px 9px;" title="이전 배당 종목">◀</button>
-                <select id="mainMonthlyStockSelect" class="form-select" style="width:auto;min-width:220px;max-width:310px;padding:6px 10px;font-size:13px;font-weight:700;"></select>
-                <button type="button" id="nextMonthlyStockBtn" class="btn btn-outline btn-sm" style="padding:6px 9px;" title="다음 배당 종목">▶</button>
-              </div>
-              <div class="segmented-group" id="mainStockChartUnitGroup" style="padding:2px;" title="월별 / 연도별 그래프 전환">
-                <button type="button" class="seg-btn active" style="padding:5px 10px;font-size:12px;" data-munit="MONTH">월별</button>
-                <button type="button" class="seg-btn" style="padding:5px 10px;font-size:12px;" data-munit="YEAR">연도별</button>
-              </div>
               <button type="button" id="mainToggleStockPriorBtn" class="btn btn-prior-toggle-off btn-sm" style="padding:6px 11px;font-size:12px;">🟧 타사 통입력: 숨김</button>
               <div class="segmented-group" id="mainMonthlyRangeGroup" style="padding:2px;">
                 <button type="button" class="seg-btn active" style="padding:5px 9px;font-size:12px;" data-mrange="12M">최근 1년</button>
                 <button type="button" class="seg-btn" style="padding:5px 9px;font-size:12px;" data-mrange="24M">최근 2년</button>
                 <button type="button" class="seg-btn" style="padding:5px 9px;font-size:12px;" data-mrange="ALL">전체</button>
               </div>
-              <button type="button" id="openSelectedMonthlyDetailBtn" class="btn btn-outline btn-sm" style="padding:6px 10px;font-size:12px;">종목 상세 ↗</button>
+              <div class="segmented-group" id="mainStockChartUnitGroup" style="padding:2px;" title="월별 / 연도별 그래프 전환">
+                <button type="button" class="seg-btn active" style="padding:5px 10px;font-size:12px;" data-munit="MONTH">월별</button>
+                <button type="button" class="seg-btn" style="padding:5px 10px;font-size:12px;" data-munit="YEAR">연도별</button>
+              </div>
             </div>
           </div>
           <div id="mainMonthlySvgWrap" class="growth-svg-wrap monthly-svg-scroll" style="min-height:210px;"></div>
@@ -521,8 +524,8 @@
         <div id="dtabPanelDividends">
           <!-- 종목별 월별·연도별 배당금 그래프 카드 -->
           <div id="detailMonthlyDivCard" class="growth-chart-card" style="margin-bottom:16px;">
-            <div class="monthly-toolbar">
-              <div>
+            <div class="monthly-header-top">
+              <div style="min-width:0;flex:1;">
                 <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
                   <span id="detailMonthlyCardTitle" class="growth-card-title" style="font-size:14.5px;">📊 월별 배당금 추이</span>
                   <span id="detailMonthlyBasisBadge" class="badge badge-auto" style="font-size:10.5px;">세후 실수령</span>
@@ -530,21 +533,25 @@
                 </div>
                 <div id="detailMonthlyMetaSub" class="growth-card-sub">월별·연도별 배당 수령액 추이</div>
               </div>
-              <div class="monthly-controls-right">
-                <div class="segmented-group" id="detailStockChartUnitGroup" style="padding:2px;" title="월별 / 연도별 그래프 전환">
-                  <button type="button" class="seg-btn active" style="padding:4px 9px;font-size:11.5px;" data-munit="MONTH">월별</button>
-                  <button type="button" class="seg-btn" style="padding:4px 9px;font-size:11.5px;" data-munit="YEAR">연도별</button>
-                </div>
-                <button type="button" id="detailToggleStockPriorBtn" class="btn btn-prior-toggle-off btn-sm" style="padding:5px 10px;font-size:11.5px;">🟧 타사 통입력: 숨김</button>
-                <div class="segmented-group" id="detailMonthlyRangeGroup" style="padding:2px;">
-                  <button type="button" class="seg-btn active" style="padding:4px 8px;font-size:11.5px;" data-mrange="12M">1년</button>
-                  <button type="button" class="seg-btn" style="padding:4px 8px;font-size:11.5px;" data-mrange="24M">2년</button>
-                  <button type="button" class="seg-btn" style="padding:4px 8px;font-size:11.5px;" data-mrange="ALL">전체</button>
-                </div>
-                <button type="button" id="toggleDetailMonthlyCollapseBtn" class="btn btn-secondary btn-sm" style="padding:5px 9px;font-size:11.5px;">접기</button>
-              </div>
+              <button type="button" id="toggleDetailMonthlyCollapseBtn" class="btn btn-secondary btn-sm" style="padding:5px 10px;font-size:11.5px;flex-shrink:0;">접기</button>
             </div>
             <div id="detailMonthlyBody">
+              <div class="monthly-controls-bar" style="padding:6px 10px;margin-bottom:10px;">
+                <div style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                  <div class="segmented-group" id="detailStockChartUnitGroup" style="padding:2px;" title="월별 / 연도별 그래프 전환">
+                    <button type="button" class="seg-btn active" style="padding:4px 9px;font-size:11.5px;" data-munit="MONTH">월별</button>
+                    <button type="button" class="seg-btn" style="padding:4px 9px;font-size:11.5px;" data-munit="YEAR">연도별</button>
+                  </div>
+                  <div class="segmented-group" id="detailMonthlyRangeGroup" style="padding:2px;">
+                    <button type="button" class="seg-btn active" style="padding:4px 8px;font-size:11.5px;" data-mrange="12M">1년</button>
+                    <button type="button" class="seg-btn" style="padding:4px 8px;font-size:11.5px;" data-mrange="24M">2년</button>
+                    <button type="button" class="seg-btn" style="padding:4px 8px;font-size:11.5px;" data-mrange="ALL">전체</button>
+                  </div>
+                </div>
+                <div class="monthly-controls-right">
+                  <button type="button" id="detailToggleStockPriorBtn" class="btn btn-prior-toggle-off btn-sm" style="padding:5px 10px;font-size:11.5px;">🟧 타사 통입력: 숨김</button>
+                </div>
+              </div>
               <div id="detailMonthlySvgWrap" class="growth-svg-wrap monthly-svg-scroll" style="min-height:195px;"></div>
               <div id="detailMonthlyLegend" class="growth-legend-row" style="margin-top:6px;"></div>
               <div id="detailMonthlyInspector" class="growth-inspector-bar"></div>

@@ -1587,13 +1587,46 @@ button, input, select, textarea {
   fill: rgba(49, 130, 246, 0.08);
 }
 
-.monthly-toolbar {
+.monthly-header-top {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.monthly-controls-bar {
+  width: 100%;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+}
+
+.monthly-stock-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  max-width: 100%;
+}
+
+.monthly-stock-select {
+  width: 285px;
+  max-width: calc(100vw - 140px);
+  padding: 6px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .monthly-controls-right {
@@ -1601,6 +1634,7 @@ button, input, select, textarea {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  margin-left: auto;
 }
 
 .btn-prior-toggle-off {
