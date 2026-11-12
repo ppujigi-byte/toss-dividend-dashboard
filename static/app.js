@@ -1182,20 +1182,26 @@
     let allPriorTotal = 0;
     let allPriorCount = 0;
     let firstPriorYm = null;
-    let allRegTotal = 0;
-    let allRegCount = 0;
+    let allTossTotal = 0;
+    let allTossCount = 0;
+    let allExtTotal = 0;
+    let allExtCount = 0;
 
     const ensureYm = (ym) => {
       if (!bucketMap.has(ym)) {
         bucketMap.set(ym, {
           ym,
-          regVal: 0,
+          tossVal: 0,
+          extVal: 0,
           priorVal: 0,
-          origUsdReg: 0,
+          origUsdToss: 0,
+          origUsdExt: 0,
           origUsdPrior: 0,
-          krwReg: 0,
+          krwToss: 0,
+          krwExt: 0,
           krwPrior: 0,
-          regCount: 0,
+          tossCount: 0,
+          extCount: 0,
           priorCount: 0,
         });
       }
@@ -1207,6 +1213,7 @@
       if (!/^\d{4}-\d{2}/.test(dt)) return;
       const ym = dt.slice(0, 7);
       const isPrior = d.source === "PRIOR_BROKER" || d.source === "PRIOR_YEARLY";
+      const isExtDated = d.source === "EXT_DIV";
       const nativeVal = Number(exTax ? d.net_amount : d.gross_amount) || 0;
       const krwVal = Number(exTax ? d.krw_net : d.krw_gross) || 0;
       const dispVal = item.currency === "USD" && usInKrw ? krwVal : nativeVal;
@@ -1220,23 +1227,34 @@
         allPriorTotal += dispVal;
         allPriorCount += 1;
         if (!firstPriorYm || ym < firstPriorYm) firstPriorYm = ym;
-      } else {
-        b.regVal += dispVal;
-        b.origUsdReg += nativeVal;
-        b.krwReg += krwVal;
+      } else if (isExtDated) {
+        b.extVal += dispVal;
+        b.origUsdExt += nativeVal;
+        b.krwExt += krwVal;
         if ((Number(d.gross_amount) || 0) > 0) {
-          b.regCount += 1;
-          allRegCount += 1;
+          b.extCount += 1;
+          allExtCount += 1;
         }
-        allRegTotal += dispVal;
+        allExtTotal += dispVal;
+      } else {
+        b.tossVal += dispVal;
+        b.origUsdToss += nativeVal;
+        b.krwToss += krwVal;
+        if ((Number(d.gross_amount) || 0) > 0) {
+          b.tossCount += 1;
+          allTossCount += 1;
+        }
+        allTossTotal += dispVal;
       }
     });
 
     const activeYms = Array.from(bucketMap.keys())
       .filter((ym) => {
         const b = bucketMap.get(ym);
-        const v = includePrior ? b.regVal + b.priorVal : b.regVal;
-        const c = includePrior ? b.regCount + b.priorCount : b.regCount;
+        const regV = b.tossVal + b.extVal;
+        const regC = b.tossCount + b.extCount;
+        const v = includePrior ? regV + b.priorVal : regV;
+        const c = includePrior ? regC + b.priorCount : regC;
         return Math.abs(v) > 0.0001 || c > 0;
       })
       .sort();
@@ -1250,7 +1268,10 @@
         allPriorTotal,
         allPriorCount,
         firstPriorYm,
-        allRegCount,
+        hasExt: allExtCount > 0,
+        allExtTotal,
+        allExtCount,
+        allRegCount: allTossCount + allExtCount,
         onlyPriorHidden: !includePrior && allPriorCount > 0,
       };
     }
@@ -1267,19 +1288,27 @@
       const ym = idxToYm(idx);
       const [yrNum, moNum] = ym.split("-").map(Number);
       const b = bucketMap.get(ym) || {
-        regVal: 0,
+        tossVal: 0,
+        extVal: 0,
         priorVal: 0,
-        origUsdReg: 0,
+        origUsdToss: 0,
+        origUsdExt: 0,
         origUsdPrior: 0,
-        krwReg: 0,
+        krwToss: 0,
+        krwExt: 0,
         krwPrior: 0,
-        regCount: 0,
+        tossCount: 0,
+        extCount: 0,
         priorCount: 0,
       };
-      const totalVal = includePrior ? b.regVal + b.priorVal : b.regVal;
-      const origUsdVal = includePrior ? b.origUsdReg + b.origUsdPrior : b.origUsdReg;
-      const krwEquivVal = includePrior ? b.krwReg + b.krwPrior : b.krwReg;
-      const count = b.regCount + (includePrior ? b.priorCount : 0);
+      const regVal = b.tossVal + b.extVal;
+      const regOrigUsd = b.origUsdToss + b.origUsdExt;
+      const regKrw = b.krwToss + b.krwExt;
+      const regCount = b.tossCount + b.extCount;
+      const totalVal = includePrior ? regVal + b.priorVal : regVal;
+      const origUsdVal = includePrior ? regOrigUsd + b.origUsdPrior : regOrigUsd;
+      const krwEquivVal = includePrior ? regKrw + b.krwPrior : regKrw;
+      const count = regCount + (includePrior ? b.priorCount : 0);
 
       let prevDiff = null;
       let prevPct = null;
@@ -1296,13 +1325,17 @@
         ym,
         year: yrNum,
         month: moNum,
-        regVal: b.regVal,
+        tossVal: b.tossVal,
+        extVal: b.extVal,
+        regVal,
         priorVal: includePrior ? b.priorVal : 0,
         totalVal,
         origUsdVal,
         krwEquivVal,
         count,
-        regCount: b.regCount,
+        tossCount: b.tossCount,
+        extCount: b.extCount,
+        regCount,
         priorCount: includePrior ? b.priorCount : 0,
         prevYm,
         prevDiff,
@@ -1320,7 +1353,10 @@
       allPriorTotal,
       allPriorCount,
       firstPriorYm,
-      allRegCount,
+      hasExt: allExtCount > 0,
+      allExtTotal,
+      allExtCount,
+      allRegCount: allTossCount + allExtCount,
       onlyPriorHidden: false,
     };
   }
@@ -1340,6 +1376,7 @@
       }
       $("mainMonthlyMetaSub").textContent = "배당 기록이 등록되면 종목별 월별 배당금 추이 그래프가 표시됩니다.";
       $("mainMonthlySvgWrap").innerHTML = `<div class="empty-state" style="padding:34px 12px;font-size:13px;">배당 수령 내역이 있는 종목이 아직 없습니다.</div>`;
+      if ($("mainMonthlyLegend")) $("mainMonthlyLegend").innerHTML = "";
       $("mainMonthlyInspector").textContent = "거래내역서 PDF 업로드 또는 배당 입력 후 월별 추이를 확인할 수 있습니다.";
       return;
     }
@@ -1356,7 +1393,7 @@
       const amt = it.currency === "USD" && state.usDivInKrw
         ? (state.excludeTax ? it.dividendNetKrw : it.dividendGrossKrw)
         : (state.excludeTax ? it.dividendNet : it.dividendGross);
-      const priorMark = it.priorBrokerDiv ? " · 타사통입력" : "";
+      const priorMark = it.priorBrokerDiv ? " · 타사통입력" : it.hasExtDiv ? " · 타사배당" : "";
       const selAttr = it.symbol === state.mainMonthlySymbol ? "selected" : "";
       return `<option value="${escapeHtml(it.symbol)}" ${selAttr}>${mktIcon} ${escapeHtml(it.name)} (${escapeHtml(it.symbol)}) · ${escapeHtml(formatCompactChartAmount(amt, dispCur))}${priorMark}</option>`;
     };
@@ -1390,10 +1427,10 @@
       if (built.hasPrior) {
         const amtTxt = formatCompactChartAmount(built.allPriorTotal, built.dispCur);
         priorBtn.textContent = on
-          ? `🏦 타사 통입력: 표시 중 (${amtTxt})`
-          : `🏦 타사 통입력 보이기 (+${amtTxt} 숨김)`;
+          ? `🟧 타사 통입력: 표시 중 (${amtTxt})`
+          : `🟧 타사 통입력 보이기 (+${amtTxt} 숨김)`;
       } else {
-        priorBtn.textContent = on ? "🏦 타사 통입력: 표시" : "🏦 타사 통입력: 숨김";
+        priorBtn.textContent = on ? "🟧 타사 통입력: 표시" : "🟧 타사 통입력: 숨김";
       }
     }
 
@@ -1402,6 +1439,28 @@
         b.classList.toggle("active", b.dataset.mrange === state.stockMonthlyRange);
       });
     }
+  }
+
+  function renderMonthlyLegend(slotKey, built) {
+    const isMain = slotKey === "MAIN";
+    const legendEl = $(isMain ? "mainMonthlyLegend" : "detailMonthlyLegend");
+    if (!legendEl || !built) return;
+    const { item, dispCur } = built;
+    const dotCls = item.market === "KR" ? "kr-bar" : "us-bar";
+    const mktTxt = item.market === "KR" ? "국내" : "미국";
+    const on = state.stockMonthlyShowPrior;
+
+    let html = `<span class="growth-legend-item"><i class="legend-dot ${dotCls}"></i>${mktTxt} 토스·실지급 배당</span>`;
+    if (built.hasExt) {
+      html += `<span class="growth-legend-item"><i class="legend-dot prior-bar"></i>타사 건별 배당(이관 전)</span>`;
+    }
+    if (built.hasPrior || on) {
+      const amtHint = built.hasPrior ? ` ${formatCompactChartAmount(built.allPriorTotal, dispCur)}` : "";
+      const stateTxt = built.hasPrior ? (on ? `(${amtHint.trim()} 표시 중)` : `(${amtHint.trim()} 숨김)`) : "";
+      html += `<button type="button" class="monthly-legend-toggle ${on ? "is-on" : "is-off"}" data-enable-monthly-prior="1" title="클릭하여 타사 통입력 배당 보이기/숨기기 전환"><i class="legend-dot lump-bar"></i>타사 통입력 배당 ${escapeHtml(stateTxt)}</button>`;
+    }
+    html += `<span class="growth-legend-item"><i class="legend-avg-dash"></i>지급월 평균선</span>`;
+    legendEl.innerHTML = html;
   }
 
   function renderStockMonthlyChartSlot(slotKey, item) {
@@ -1420,6 +1479,7 @@
     );
     state.lastMonthlyBuilt[slotKey] = built;
     syncMonthlyControlsUi(slotKey, built);
+    renderMonthlyLegend(slotKey, built);
 
     const { series, dispCur } = built;
     if (built.onlyPriorHidden) {
@@ -1429,10 +1489,10 @@
           <div style="margin-bottom:10px;color:var(--text-secondary);">
             이 종목은 한 번에 합산 입력한 <strong>타사 통입력 배당(${formatMoney(built.allPriorTotal, dispCur)})</strong>만 있어 현재 월별 그래프에서 숨겨져 있습니다.
           </div>
-          <button type="button" class="btn btn-prior btn-sm" data-enable-monthly-prior="1">🏦 타사 통입력 보이기 켜기</button>
+          <button type="button" class="btn btn-prior-toggle-on btn-sm" data-enable-monthly-prior="1">🟧 타사 통입력 보이기 켜기</button>
         </div>
       `;
-      inspector.textContent = "상단 '타사 통입력 보이기' 버튼을 누르면 이관 기준월 막대가 표시됩니다.";
+      inspector.textContent = "상단 '타사 통입력 보이기' 버튼을 누르면 주황색 타사 통입력 막대가 표시됩니다.";
       return;
     }
 
@@ -1453,7 +1513,7 @@
       !state.stockMonthlyShowPrior && built.hasPrior
         ? ` · 타사통입력 ${formatMoney(built.allPriorTotal, dispCur)} 제외됨`
         : state.stockMonthlyShowPrior && built.hasPrior
-        ? ` · 타사통입력 포함`
+        ? ` · 타사통입력(주황) 포함`
         : "";
     metaSub.textContent = `${startLabel}~${endLabel} 합계 ${formatMoney(sumPeriod, dispCur)} · 지급월 평균 ${formatMoney(avgPerPayoutMonth, dispCur)} (${payoutMonths.length}개 지급월) · 최고 ${peakRow.ym.replace("-", ".")} (${formatMoney(peakRow.totalVal, dispCur)})${hiddenNote}`;
 
@@ -1479,8 +1539,15 @@
     const maxVal = Math.max(...series.map((s) => Math.max(0, s.totalVal)), 1);
     const slotW = plotW / n;
     const barW = Math.min(38, Math.max(7, slotW * 0.62));
-    const mainColor = item.market === "KR" ? "#00a86b" : "#3182f6";
-    const priorColor = "#8b5cf6";
+    const tossColor = item.market === "KR" ? "#00a86b" : "#3182f6";
+    const extColor = "#8b5cf6";
+    const hatchId = `lumpHatch_${slotKey}`;
+    const defsItems = [
+      `<pattern id="${hatchId}" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">`,
+      `<rect width="6" height="6" fill="#f59e0b" />`,
+      `<line x1="0" y1="0" x2="0" y2="6" stroke="rgba(255,255,255,0.28)" stroke-width="2" />`,
+      `</pattern>`,
+    ];
 
     const gridLines = [0, 0.5, 1]
       .map((ratio) => {
@@ -1516,20 +1583,39 @@
 
         let rectsHtml = "";
         if (totH > 0) {
-          const regPos = Math.max(0, row.regVal);
-          const priPos = Math.max(0, row.priorVal);
-          const sumPos = regPos + priPos;
-          const regH = sumPos > 0 ? totH * (regPos / sumPos) : 0;
-          const priH = Math.max(0, totH - regH);
           const rx = Math.min(5, barW / 2);
-          if (priH > 0.5 && regH > 0.5) {
-            rectsHtml = `
-              <rect x="${bx.toFixed(1)}" y="${(baseY - regH).toFixed(1)}" width="${barW.toFixed(1)}" height="${regH.toFixed(1)}" rx="${rx.toFixed(1)}" fill="${mainColor}" opacity="0.94" />
-              <rect x="${bx.toFixed(1)}" y="${topY.toFixed(1)}" width="${barW.toFixed(1)}" height="${priH.toFixed(1)}" rx="${rx.toFixed(1)}" fill="${priorColor}" opacity="0.93" />
-            `;
+          const rawSegs = [
+            { val: Math.max(0, row.tossVal), fill: tossColor, stroke: null },
+            { val: Math.max(0, row.extVal), fill: extColor, stroke: null },
+            { val: Math.max(0, row.priorVal), fill: `url(#${hatchId})`, stroke: "#d97706" },
+          ].filter((s) => s.val > 0.0001);
+          const sumPos = rawSegs.reduce((acc, s) => acc + s.val, 0);
+
+          if (rawSegs.length <= 1) {
+            const singleFill = rawSegs.length === 1 ? rawSegs[0].fill : tossColor;
+            const singleStroke = rawSegs.length === 1 && rawSegs[0].stroke ? ` stroke="${rawSegs[0].stroke}" stroke-width="0.9"` : "";
+            rectsHtml = `<rect x="${bx.toFixed(1)}" y="${topY.toFixed(1)}" width="${barW.toFixed(1)}" height="${totH.toFixed(1)}" rx="${rx.toFixed(1)}" fill="${singleFill}"${singleStroke} opacity="${isSel ? "1" : "0.92"}" />`;
           } else {
-            const col = priH > regH ? priorColor : mainColor;
-            rectsHtml = `<rect x="${bx.toFixed(1)}" y="${topY.toFixed(1)}" width="${barW.toFixed(1)}" height="${totH.toFixed(1)}" rx="${rx.toFixed(1)}" fill="${col}" opacity="${isSel ? "1" : "0.9"}" />`;
+            const clipId = `mbarClip_${slotKey}_${idx}`;
+            defsItems.push(
+              `<clipPath id="${clipId}"><rect x="${bx.toFixed(1)}" y="${topY.toFixed(1)}" width="${barW.toFixed(1)}" height="${totH.toFixed(1)}" rx="${rx.toFixed(1)}" /></clipPath>`
+            );
+            let curBottom = baseY;
+            let innerSegs = "";
+            let sepLines = "";
+            rawSegs.forEach((seg, sIdx) => {
+              const segH =
+                sIdx === rawSegs.length - 1
+                  ? Math.max(0.5, curBottom - topY)
+                  : totH * (seg.val / sumPos);
+              const segY = curBottom - segH;
+              innerSegs += `<rect x="${bx.toFixed(1)}" y="${segY.toFixed(1)}" width="${barW.toFixed(1)}" height="${(segH + 0.3).toFixed(1)}" fill="${seg.fill}" opacity="${isSel ? "1" : "0.94"}" />`;
+              if (sIdx < rawSegs.length - 1 && segH > 1.2) {
+                sepLines += `<line x1="${bx.toFixed(1)}" y1="${segY.toFixed(1)}" x2="${(bx + barW).toFixed(1)}" y2="${segY.toFixed(1)}" stroke="#ffffff" stroke-width="1.8" />`;
+              }
+              curBottom = segY;
+            });
+            rectsHtml = `<g clip-path="url(#${clipId})">${innerSegs}${sepLines}</g>`;
           }
         } else if (row.totalVal < -0.0001) {
           rectsHtml = `<rect x="${bx.toFixed(1)}" y="${(baseY - 3).toFixed(1)}" width="${barW.toFixed(1)}" height="3" rx="1.5" fill="#94a3b8" />`;
@@ -1561,8 +1647,9 @@
       })
       .join("");
 
+    const defsHtml = `<defs>${defsItems.join("")}</defs>`;
     const svgStyle = W > baseW ? `style="min-width:${W}px;width:${W}px;height:auto;"` : `style="width:100%;height:auto;"`;
-    svgWrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" ${svgStyle} role="img" aria-label="${escapeHtml(item.name)} 월별 배당금 그래프">${gridLines}${avgLineHtml}${barGroups}</svg>`;
+    svgWrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" ${svgStyle} role="img" aria-label="${escapeHtml(item.name)} 월별 배당금 그래프">${defsHtml}${gridLines}${avgLineHtml}${barGroups}</svg>`;
     if (W > baseW) {
       requestAnimationFrame(() => {
         svgWrap.scrollLeft = svgWrap.scrollWidth;
@@ -1588,8 +1675,21 @@
         subCurrencyHtml += ` <span style="color:var(--text-secondary);">(입금원화 ${formatMoney(row.krwEquivVal, "KRW")})</span>`;
       }
     }
-    if (row.priorVal > 0.0001) {
-      subCurrencyHtml += ` <span style="color:var(--prior-purple);">(정기 ${formatMoney(row.regVal, dispCur)} + 타사통입력 ${formatMoney(row.priorVal, dispCur)})</span>`;
+    if (Math.abs(row.extVal) > 0.0001 || Math.abs(row.priorVal) > 0.0001) {
+      const tossCol = item.market === "KR" ? "#00875a" : "#1d4ed8";
+      const breakdownParts = [];
+      if (Math.abs(row.tossVal) > 0.0001) {
+        breakdownParts.push(`<span style="color:${tossCol};font-weight:700;">토스 ${formatMoney(row.tossVal, dispCur)}</span>`);
+      }
+      if (Math.abs(row.extVal) > 0.0001) {
+        breakdownParts.push(`<span style="color:#7c3aed;font-weight:700;">타사건별 ${formatMoney(row.extVal, dispCur)}</span>`);
+      }
+      if (Math.abs(row.priorVal) > 0.0001) {
+        breakdownParts.push(`<span style="color:#b45309;font-weight:700;">타사통입력 ${formatMoney(row.priorVal, dispCur)}</span>`);
+      }
+      if (breakdownParts.length > 0) {
+        subCurrencyHtml += ` <span style="color:var(--text-muted);">(${breakdownParts.join(" + ")})</span>`;
+      }
     }
 
     let diffHtml = `<span style="color:var(--text-muted);">비교 기준 첫 지급월</span>`;
@@ -2987,7 +3087,8 @@
     const handleMonthlyBarInteract = (e) => {
       const enableBtn = e.target.closest("[data-enable-monthly-prior]");
       if (enableBtn && e.type === "click") {
-        const slotHint = e.currentTarget?.id === "mainMonthlySvgWrap" ? "MAIN" : "DETAIL";
+        const curId = e.currentTarget?.id || "";
+        const slotHint = curId.startsWith("main") ? "MAIN" : "DETAIL";
         toggleStockMonthlyPrior(slotHint);
         return;
       }
@@ -3009,6 +3110,8 @@
     $("mainMonthlySvgWrap")?.addEventListener("click", handleMonthlyBarInteract);
     $("detailMonthlySvgWrap")?.addEventListener("mouseover", handleMonthlyBarInteract);
     $("detailMonthlySvgWrap")?.addEventListener("click", handleMonthlyBarInteract);
+    $("mainMonthlyLegend")?.addEventListener("click", handleMonthlyBarInteract);
+    $("detailMonthlyLegend")?.addEventListener("click", handleMonthlyBarInteract);
 
     $("statusFilterGroup").addEventListener("click", (e) => {
       const btn = e.target.closest(".seg-btn");

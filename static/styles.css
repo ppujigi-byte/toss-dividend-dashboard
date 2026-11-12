@@ -1606,23 +1606,73 @@ button, input, select, textarea {
 .btn-prior-toggle-off {
   background: var(--surface);
   color: var(--text-secondary);
-  border: 1.5px dashed #c4b5fd;
+  border: 1.5px dashed #f59e0b;
 }
 
 .btn-prior-toggle-off:hover:not(:disabled) {
-  background: #faf5ff;
-  color: var(--prior-purple);
-  border-color: #a78bfa;
+  background: #fffbeb;
+  color: #b45309;
+  border-color: #d97706;
 }
 
 .btn-prior-toggle-on {
-  background: var(--prior-purple-soft);
-  color: var(--prior-purple);
-  border: 1.5px solid #a78bfa;
+  background: #fffbeb;
+  color: #b45309;
+  border: 1.5px solid #f59e0b;
 }
 
 .btn-prior-toggle-on:hover:not(:disabled) {
-  background: #ede9fe;
+  background: #fef3c7;
 }
+
+.legend-dot.lump-bar {
+  background: repeating-linear-gradient(
+    -45deg,
+    #f59e0b,
+    #f59e0b 3px,
+    #fbbf24 3px,
+    #fbbf24 5px
+  );
+  border: 1px solid #d97706;
+}
+
+.legend-avg-dash {
+  width: 14px;
+  height: 0;
+  border-top: 2px dashed #0f766e;
+  display: inline-block;
+}
+
+.monthly-legend-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 1px dashed transparent;
+  border-radius: 7px;
+  padding: 2px 7px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s, border-color 0.14s;
+}
+
+.monthly-legend-toggle:hover {
+  background: #fffbeb;
+  color: #b45309;
+  border-color: #fcd34d;
+}
+
+.monthly-legend-toggle.is-on {
+  background: #fffbeb;
+  color: #b45309;
+  font-weight: 700;
+  border: 1px solid #fcd34d;
+}
+
+.monthly-legend-toggle.is-off .legend-dot.lump-bar {
+  opacity: 0.45;
+}
+
 
 
