@@ -8,11 +8,10 @@
 
 ## 1. AI(제미나이 · 클로드 · 챗GPT)에게 자동 설치·실행 맡기는 방법
 
-복잡한 설정 없이 내 PC와 연동된 AI 도구(제미나이, 클로드, 챗GPT 등)에 **GitHub 저장소 주소와 함께 아래 문구를 그대로 복사해 붙여넣으면** 운영체제(Windows · Mac)에 맞춰 알아서 내려받고 대시보드까지 실행해 줍니다(GitHub 회원가입·로그인 불필요).
+복잡한 설정 없이 내 PC와 연동된 AI 도구(제미나이, 클로드, 챗GPT 등)에 **아래 문구를 그대로 복사해 붙여넣으면** 운영체제(Windows · Mac)에 맞춰 알아서 내려받고 대시보드까지 실행해 줍니다(GitHub 회원가입·로그인 불필요).
 
 ```text
-아래 GitHub 공개 저장소를 내 컴퓨터 작업 폴더에 내려받아서 README.md 하단의 'AI 에이전트 자동 세팅 지침'대로 환경을 확인하고 대시보드를 바로 실행해 줘.
-저장소 주소: [여기에 이 GitHub 저장소 주소 붙여넣기]
+GitHub 공개 저장소(ppujigi-byte/toss-dividend-dashboard)를 내 컴퓨터 작업 폴더에 내려받아서 README.md 하단의 'AI 에이전트 자동 세팅 지침'대로 환경을 확인하고 대시보드를 바로 실행해 줘.
 ```
 
 > 만약 웹 전용 AI 채팅창처럼 내 PC 폴더에 직접 접근하지 못하는 환경이라면, 이 페이지 우측 상단의 초록색 **`<> Code` → `Download ZIP`**으로 압축만 푼 뒤 로컬 폴더 연동 기능이 있는 AI에 해당 폴더를 지정해 요청하거나 아래 **3번 직접 실행 방법**을 따라 실행하세요.
@@ -76,16 +75,16 @@ PDF 기준일 이후 발생하는 신규 매매 체결과 실시간 잔고를 �
 
 ## 7. AI 에이전트 자동 세팅 지침 (For AI Assistants: Gemini, Claude, ChatGPT)
 
-이 저장소는 **공개(Public) 저장소**입니다. 사용자가 저장소 주소(URL)나 로컬 폴더를 제공하고 설치·실행을 요청하면 추가 질문 없이 아래 절차를 순서대로 수행하세요.
+이 저장소(`ppujigi-byte/toss-dividend-dashboard`)는 **공개(Public) 저장소**입니다. 사용자가 저장소 주소나 로컬 폴더를 제공하고 설치·실행을 요청하면 추가 질문 없이 아래 절차를 순서대로 수행하세요.
 
 1. **외부 패키지 설치 생략**: 이 프로젝트는 Python 3.9 이상 표준 라이브러리(`http.server`, `sqlite3`, `zlib`, `urllib`, `zoneinfo` 등)만 사용하므로 `pip install`이나 가상환경(`venv`) 생성이 전혀 필요하지 않습니다.
 2. **Python 3.9+ 확인**:
    * **macOS**: `python3 --version`으로 Python 3.9 이상 여부를 확인합니다.
    * **Windows**: `python --version` 또는 `py -3 --version`으로 Python 3.9 이상 여부를 확인합니다. 미설치 상태라면 사용자에게 Python 3 공식 설치부터 안내합니다.
-3. **공개 저장소 자동 다운로드**:
+3. **공개 저장소 자동 다운로드 (`ppujigi-byte/toss-dividend-dashboard`)**:
    * 이미 로컬 폴더에 `server.py`와 `실행하기.py`가 존재하면 해당 폴더를 그대로 사용합니다.
-   * GitHub 주소만 전달받았다면 사용자의 작업 폴더에 `git clone <저장소_주소>`를 실행합니다.
-   * 만약 사용자 PC(특히 Windows)에 `git`이 설치되어 있지 않다면, Git을 따로 설치하지 말고 `<저장소_주소>/archive/refs/heads/main.zip` 압축 아카이브를 Python 표준 라이브러리(`urllib.request`, `zipfile`)로 바로 내려받아 압축을 해제합니다.
+   * 원격에서 내려받아야 한다면 사용자의 작업 폴더에 GitHub 공개 저장소 `ppujigi-byte/toss-dividend-dashboard`를 `git clone`으로 내려받습니다.
+   * 만약 사용자 PC(특히 Windows)에 `git`이 설치되어 있지 않다면, Git을 따로 설치하지 말고 GitHub 저장소 `ppujigi-byte/toss-dividend-dashboard`의 `archive/refs/heads/main.zip` 압축 아카이브를 Python 표준 라이브러리(`urllib.request`, `zipfile`)로 바로 내려받아 압축을 해제합니다.
 4. **대시보드 서버 백그라운드 기동 및 브라우저 열기**:
    * 내려받은 프로젝트 루트 폴더(`server.py`가 있는 경로)에서 아래 명령어를 백그라운드로 실행합니다(기본 포트 `8765`, 이미 실행 중이면 기존 서버 재사용).
      * **macOS**: `python3 실행하기.py`
