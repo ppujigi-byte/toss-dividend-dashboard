@@ -1332,7 +1332,7 @@
   }
 
   function classifyTradeCategory(t) {
-    if (t.source === "PDF_TRANSFER" || t.source === "PDF_EVENT") return "INBOUND";
+    if (t.source === "PDF_TRANSFER" || t.source === "PDF_EVENT" || (t.source === "PDF_CORP" && t.side === "BUY")) return "INBOUND";
     if (t.side === "SPLIT_IN" || t.side === "SPLIT_OUT" || t.source === "PDF_CORP") return "CORP";
     if (t.side === "SELL") return "SELL";
     return "BUY";
@@ -1357,6 +1357,11 @@
   function getTradeBadgeInfo(t) {
     if (t.source === "PDF_TRANSFER") return { cls: "badge-transfer", label: "타사입고(매수)" };
     if (t.source === "PDF_EVENT") return { cls: "badge-auto", label: "이벤트입고" };
+    if (t.source === "PDF_CORP" && t.side === "BUY") {
+      return (Number(t.gross_amount) || 0) > 0
+        ? { cls: "badge-transfer", label: "유상·청약입고" }
+        : { cls: "badge-auto", label: "무상·배당입고" };
+    }
     if (t.side === "SPLIT_IN") return { cls: "badge-sold", label: "분할·병합입고" };
     if (t.side === "SPLIT_OUT") return { cls: "badge-sold", label: "분할·병합출고" };
     if (t.side === "BUY") return { cls: "badge-buy", label: "매수체결" };
@@ -1572,12 +1577,19 @@
         .map((t) => {
           const bInfo = getTradeBadgeInfo(t);
           const rowRealized = exTax ? t.realizedPnlNet : t.realizedPnlGross;
+          const dateBasisHtml =
+            t.source === "API"
+              ? `<span style="font-size:11px;color:var(--toss-blue);font-weight:700;">체결일</span>`
+              : String(t.source || "").startsWith("PDF")
+              ? `<span style="font-size:11px;color:var(--text-muted);font-weight:600;">결제일</span>`
+              : "";
           return `
             <tr>
               <td>
                 <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
                   <span class="badge ${bInfo.cls}">${bInfo.label}</span>
                   <span style="font-weight:700;">${escapeHtml(t.trade_date)}</span>
+                  ${dateBasisHtml}
                 </div>
                 <div class="cell-sub">${escapeHtml(t.memo || t.source)}</div>
               </td>

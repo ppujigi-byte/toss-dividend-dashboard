@@ -191,9 +191,105 @@ def _add_business_days(iso_date: str, days: int = 2) -> str:
     return dt.isoformat()
 
 
+def _subtract_business_days(iso_date: str, days: int = 5) -> str:
+    try:
+        dt = datetime.date.fromisoformat(iso_date[:10])
+    except ValueError:
+        return iso_date[:10]
+    removed = 0
+    while removed < days:
+        dt -= datetime.timedelta(days=1)
+        if dt.weekday() < 5:
+            removed += 1
+    return dt.isoformat()
+
+
 def _estimate_settlement_date(exec_date_iso: str, market: str) -> str:
-    """체결일(OpenAPI 기준)로부터 결제일(거래내역서 PDF 기준: 국내 T+2, 미국 T+1) 추정"""
-    return _add_business_days(exec_date_iso, 2 if market == "KR" else 1)
+    """체결일(OpenAPI 기준)로부터 한국시간 거래내역서 PDF상 결제일(+2영업일) 추정"""
+    return _add_business_days(exec_date_iso, 2)
+
+
+def _match_order_in_pdf_rows(
+    od_sym: str,
+    od_side: str,
+    tr_dt: str,
+    od_qty: float,
+    od_price: float,
+    cur: str,
+    boundary_pdf_rows: List[Dict[str, Any]],
+    matched_pdf_ids: set,
+) -> bool:
+    """
+    체결일(tr_dt) 기준 주문이 거래내역서 PDF 경계 구간(결제일 tr_dt ~ tr_dt+6일)에
+    이미 결제 반영되어 있는지 정밀 대조 (단건 일치 및 동일 결제일 분할체결 합산 지원)
+    """
+    try:
+        od_dt_obj = datetime.date.fromisoformat(tr_dt[:10])
+    except ValueError:
+        return False
+
+    qty_tol = max(1e-5, od_qty * 1e-4)
+    price_tol = max(0.03 if cur == "USD" else 10.0, od_price * 0.008) if od_price > 0 else 0.0
+
+    cands: List[Dict[str, Any]] = []
+    for pr in boundary_pdf_rows:
+        if pr["id"] in matched_pdf_ids:
+            continue
+        if pr["symbol"] != od_sym or pr["side"] != od_side:
+            continue
+        try:
+            pr_dt_obj = datetime.date.fromisoformat(str(pr["trade_date"])[:10])
+        except ValueError:
+            continue
+        diff_days = (pr_dt_obj - od_dt_obj).days
+        if 0 <= diff_days <= 6:
+            cands.append(pr)
+
+    if not cands:
+        return False
+
+    for pr in cands:
+        pr_qty = float(pr["quantity"])
+        pr_price = float(pr["price"])
+        if abs(pr_qty - od_qty) <= qty_tol:
+            if od_price <= 0 or pr_price <= 0 or abs(pr_price - od_price) <= price_tol:
+                matched_pdf_ids.add(pr["id"])
+                return True
+
+    by_settle_dt: Dict[str, List[Dict[str, Any]]] = {}
+    for pr in cands:
+        by_settle_dt.setdefault(str(pr["trade_date"])[:10], []).append(pr)
+
+    for _, day_rows in sorted(by_settle_dt.items()):
+        if len(day_rows) < 2 or len(day_rows) > 12:
+            continue
+        n_rows = len(day_rows)
+
+        def _dfs(start_idx: int, picked: List[Dict[str, Any]], q_sum: float, amt_sum: float) -> Optional[List[Dict[str, Any]]]:
+            if len(picked) >= 2 and abs(q_sum - od_qty) <= qty_tol:
+                avg_p = (amt_sum / q_sum) if q_sum > 0 else 0.0
+                if od_price <= 0 or avg_p <= 0 or abs(avg_p - od_price) <= price_tol:
+                    return list(picked)
+            if len(picked) >= 6 or q_sum > od_qty + qty_tol:
+                return None
+            for i in range(start_idx, n_rows):
+                r_item = day_rows[i]
+                rq = float(r_item["quantity"])
+                rp = float(r_item["price"])
+                picked.append(r_item)
+                found = _dfs(i + 1, picked, q_sum + rq, amt_sum + rq * rp)
+                if found is not None:
+                    return found
+                picked.pop()
+            return None
+
+        matched_subset = _dfs(0, [], 0.0, 0.0)
+        if matched_subset:
+            for mr in matched_subset:
+                matched_pdf_ids.add(mr["id"])
+            return True
+
+    return False
 
 
 def _calc_kr_dividend_tax(gross_krw: float) -> int:
@@ -1497,17 +1593,29 @@ class TossOpenApiSyncService:
                     "SELECT value FROM app_meta WHERE key = ?", (f"last_api_order_date_{account_key}",)
                 ).fetchone()
                 last_api_dt = str(last_api_dt_row["value"]).strip() if (last_api_dt_row and last_api_dt_row["value"]) else None
+                boundary_rec_row = conn.execute(
+                    "SELECT value FROM app_meta WHERE key = ?", (f"boundary_v2_reconciled_{account_key}",)
+                ).fetchone()
+                boundary_reconciled_cutoff = (
+                    str(boundary_rec_row["value"]).strip() if (boundary_rec_row and boundary_rec_row["value"]) else None
+                )
                 alias_map = _load_alias_map(conn)
             finally:
                 conn.close()
 
         # 증분 조회 시작일 산출:
-        # PDF 기준일이 있으면 결제일(T+1/T+2) 미결제 경계 체결분을 놓치지 않도록 6일 전부터 조회
+        # PDF 기준일 경계의 미결제 체결분(미국 한국결제 +2영업일·휴일 포함)을 빠짐없이 스캔하도록 보정
         effective_from = from_date
         if not effective_from:
-            anchor = max(d for d in [pdf_cutoff, last_api_dt] if d) if (pdf_cutoff or last_api_dt) else None
-            if anchor:
-                effective_from = (datetime.date.fromisoformat(anchor) - datetime.timedelta(days=6)).isoformat()
+            candidates_from: List[str] = []
+            if last_api_dt:
+                candidates_from.append((datetime.date.fromisoformat(last_api_dt) - datetime.timedelta(days=6)).isoformat())
+            if pdf_cutoff and boundary_reconciled_cutoff != pdf_cutoff:
+                candidates_from.append((datetime.date.fromisoformat(pdf_cutoff) - datetime.timedelta(days=7)).isoformat())
+            elif pdf_cutoff and not last_api_dt:
+                candidates_from.append((datetime.date.fromisoformat(pdf_cutoff) - datetime.timedelta(days=7)).isoformat())
+            if candidates_from:
+                effective_from = min(candidates_from)
 
         # 2) 보유 종목 실시간 조회 (/api/v1/holdings)
         holdings_res = self.request_get(
@@ -1646,8 +1754,10 @@ class TossOpenApiSyncService:
 
                 # PDF 경계 구간 중복 판정용 기존 PDF 거래 로드
                 boundary_pdf_rows = []
+                hard_settled_cutoff = ""
                 if pdf_cutoff:
-                    boundary_from = (datetime.date.fromisoformat(pdf_cutoff) - datetime.timedelta(days=10)).isoformat()
+                    hard_settled_cutoff = _subtract_business_days(pdf_cutoff, 5)
+                    boundary_from = (datetime.date.fromisoformat(pdf_cutoff) - datetime.timedelta(days=12)).isoformat()
                     boundary_pdf_rows = [
                         dict(r)
                         for r in conn.execute(
@@ -1655,6 +1765,7 @@ class TossOpenApiSyncService:
                             SELECT id, symbol, side, trade_date, quantity, price
                             FROM trades
                             WHERE account_key = ? AND source = 'PDF' AND trade_date >= ?
+                            ORDER BY trade_date ASC, id ASC
                             """,
                             (account_key, boundary_from),
                         ).fetchall()
@@ -1706,34 +1817,25 @@ class TossOpenApiSyncService:
                         continue
 
                     # PDF 원장 커트오프 경계 중복 차단:
-                    # 1) 추정 결제일(국내 T+2, 미국 T+1)이 pdf_cutoff 이하이면 이미 PDF 원장에 결제 반영된 거래임 -> 스킵
+                    # 1) pdf_cutoff 대비 5영업일 이상 이전 체결분은 휴일 포함 100% PDF에 결제 반영 완료 -> 스킵
+                    # 2) 경계 구간(hard_settled_cutoff < tr_dt <= pdf_cutoff)은 실제 PDF 결제 행(단건·동일결제일 분할합산)에 매칭될 때만 스킵하고,
+                    #    아직 미결제(예: 미국장 체결 후 한국시간 +2영업일 결제로 PDF에 미포함)인 주문은 누락 없이 API 체결로 반영!
                     if pdf_cutoff:
-                        est_settle = _estimate_settlement_date(tr_dt, mkt)
-                        if est_settle <= pdf_cutoff:
+                        if hard_settled_cutoff and tr_dt <= hard_settled_cutoff:
                             skipped_in_pdf += 1
                             continue
-                        # 2) 만약 체결일이 pdf_cutoff 이하인데 PDF에 동일 종목·방향·수량·단가 행이 이미 존재하면 중복 스킵
-                        if tr_dt <= pdf_cutoff:
-                            dup_pdf = next(
-                                (
-                                    pr
-                                    for pr in boundary_pdf_rows
-                                    if pr["id"] not in matched_pdf_ids
-                                    and pr["symbol"] == sym
-                                    and pr["side"] == od["side"]
-                                    and pr["trade_date"] >= tr_dt
-                                    and abs(float(pr["quantity"]) - float(od["quantity"])) < 1e-5
-                                    and (
-                                        float(od["price"]) <= 0
-                                        or abs(float(pr["price"]) - float(od["price"])) <= max(0.05, float(od["price"]) * 0.005)
-                                    )
-                                ),
-                                None,
-                            )
-                            if dup_pdf:
-                                matched_pdf_ids.add(dup_pdf["id"])
-                                skipped_in_pdf += 1
-                                continue
+                        if tr_dt <= pdf_cutoff and _match_order_in_pdf_rows(
+                            sym,
+                            od["side"],
+                            tr_dt,
+                            float(od["quantity"]),
+                            float(od["price"]),
+                            cur,
+                            boundary_pdf_rows,
+                            matched_pdf_ids,
+                        ):
+                            skipped_in_pdf += 1
+                            continue
 
                     conn.execute(
                         """
@@ -1766,6 +1868,11 @@ class TossOpenApiSyncService:
                     conn.execute(
                         "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)",
                         (f"last_api_order_date_{account_key}", newest_order_date),
+                    )
+                if pdf_cutoff:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)",
+                        (f"boundary_v2_reconciled_{account_key}", pdf_cutoff),
                     )
                 conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)", (f"last_sync_{account_key}", now_str))
                 conn.commit()

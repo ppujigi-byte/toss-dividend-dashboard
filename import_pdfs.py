@@ -205,9 +205,14 @@ def resolve_missing_kr_dividend_codes(rows: List[Dict[str, Any]], kr_names: Dict
     kr_trades_by_code: Dict[str, List[Tuple[str, float]]] = defaultdict(list)
     for r in rows:
         if r["section"] == "KRW" and r["stockCode"].startswith("A"):
-            if r["txType"] in in_txs or str(r["txType"]).startswith("타사대체입고"):
+            tx_t = str(r["txType"] or "")
+            if (
+                tx_t in in_txs
+                or tx_t.startswith("타사대체입고")
+                or (any(k in tx_t for k in ("유상", "무상", "청약", "공모", "주식배당")) and "출고" not in tx_t and "단주" not in tx_t)
+            ):
                 kr_trades_by_code[r["stockCode"]].append((r["date"], fnum(r["qty"])))
-            elif r["txType"] == "판매":
+            elif tx_t == "판매":
                 kr_trades_by_code[r["stockCode"]].append((r["date"], -fnum(r["qty"])))
 
     def qty_as_of(code: str, dt_dot: str) -> int:
@@ -591,8 +596,30 @@ def import_pdf_ledger_to_db(pdf_dir: Path = PDF_DIR, target_account_key: Optiona
         "토스뱅크주식캐시백입고",
         "해외주식이벤트입고",
     }
-    split_in_txs = {"주식분할입고", "주식병합입고", "종목교환입고", "종목코드변경입고"}
-    split_out_txs = {"주식분할출고", "주식병합출고", "종목교환출고", "종목코드변경출고"}
+    split_in_txs = {
+        "주식분할입고",
+        "주식병합입고",
+        "종목교환입고",
+        "종목코드변경입고",
+        "합병입고",
+        "분할합병입고",
+        "감자입고",
+        "액면분할입고",
+        "액면병합입고",
+    }
+    split_out_txs = {
+        "주식분할출고",
+        "주식병합출고",
+        "종목교환출고",
+        "종목코드변경출고",
+        "합병출고",
+        "분할합병출고",
+        "감자출고",
+        "액면분할출고",
+        "액면병합출고",
+    }
+    paid_rights_keywords = ("유상", "청약", "공모", "신주인수권행사")
+    bonus_rights_keywords = ("무상", "주식배당")
 
     trade_records: List[Tuple[Any, ...]] = []
     dividend_records: List[Tuple[Any, ...]] = []
@@ -701,13 +728,52 @@ def import_pdf_ledger_to_db(pdf_dir: Path = PDF_DIR, target_account_key: Optiona
             memo = f"{tx} (무상입고)"
             trade_records.append((ext_id, sym, name, mkt, cur, "BUY", dt_iso, qty, price, 0.0, 0.0, 0.0, "PDF_EVENT", memo))
 
-        # 4) 주식분할·병합·종목교환·코드변경 입고/출고 (원가 총액 보존)
-        elif tx in split_out_txs and sym and qty > 0:
+        # 3-B) 유상증자·유상청약·공모주 신주 입고 -> 청약 납입원금 기준 매수 처리
+        elif (
+            sym
+            and qty > 0
+            and any(k in tx for k in paid_rights_keywords)
+            and "출고" not in tx
+            and "단주" not in tx
+            and "배당" not in tx
+        ):
+            price = fnum(r["priceUsd"] if cur == "USD" else r["priceKrw"])
+            raw_gross = fnum(r["grossUsd"] if cur == "USD" else r["grossKrw"])
+            gross = raw_gross if raw_gross > 0 else round(qty * price, 4 if cur == "USD" else 0)
+            if price <= 0 and gross > 0:
+                price = round(gross / qty, 4 if cur == "USD" else 0)
+            if price > 0 and sym in stock_meta:
+                stock_meta[sym]["last_price"] = price
+            memo = f"{tx} (유상·청약 신주입고)"
+            trade_records.append((ext_id, sym, name, mkt, cur, "BUY", dt_iso, qty, price, gross, 0.0, 0.0, "PDF_CORP", memo))
+
+        # 3-C) 무상증자·주식배당 신주 입고 -> 원금 0원 매수 처리 (이동평균 평단가 자동 희석)
+        elif (
+            sym
+            and qty > 0
+            and any(k in tx for k in bonus_rights_keywords)
+            and "출고" not in tx
+            and "단주" not in tx
+        ):
+            price = fnum(r["priceUsd"] if cur == "USD" else r["priceKrw"])
+            if price > 0 and sym in stock_meta:
+                stock_meta[sym]["last_price"] = price
+            memo = f"{tx} (무상·주식배당 입고)"
+            trade_records.append((ext_id, sym, name, mkt, cur, "BUY", dt_iso, qty, price, 0.0, 0.0, 0.0, "PDF_CORP", memo))
+
+        # 4) 주식분할·병합·합병·감자·종목교환·코드변경 입고/출고 (원가 총액 보존)
+        elif (
+            tx in split_out_txs
+            or (tx.endswith("출고") and any(k in tx for k in ("분할", "병합", "합병", "교환", "코드변경", "감자")))
+        ) and sym and qty > 0:
             price = fnum(r["priceUsd"] if cur == "USD" else r["priceKrw"])
             comm = fnum(r["commUsd"] if cur == "USD" else r["commKrw"])
             trade_records.append((ext_id, sym, name, mkt, cur, "SPLIT_OUT", dt_iso, qty, price, 0.0, comm, 0.0, "PDF_CORP", tx))
 
-        elif tx in split_in_txs and sym and qty > 0:
+        elif (
+            tx in split_in_txs
+            or (tx.endswith("입고") and any(k in tx for k in ("분할", "병합", "합병", "교환", "코드변경", "감자")))
+        ) and sym and qty > 0:
             price = fnum(r["priceUsd"] if cur == "USD" else r["priceKrw"])
             comm = fnum(r["commUsd"] if cur == "USD" else r["commKrw"])
             if price > 0 and sym in stock_meta:
@@ -1010,6 +1076,70 @@ def import_pdf_ledger_to_db(pdf_dir: Path = PDF_DIR, target_account_key: Optiona
             """,
             [(acc_key, *dv) for dv in dividend_records],
         )
+
+        # 새 PDF 기준일(max_trade_date_iso) 이하에 이미 결제 반영된 기존 API 체결 및 AUTO 배당 자동 정리 (중복 원천 방지)
+        if max_trade_date_iso:
+            conn.execute(
+                "DELETE FROM dividends WHERE account_key = ? AND source = 'AUTO' AND pay_date <= ?",
+                (acc_key, max_trade_date_iso),
+            )
+            try:
+                cutoff_dt_obj = datetime.date.fromisoformat(max_trade_date_iso[:10])
+                rem = 0
+                hard_dt = cutoff_dt_obj
+                while rem < 5:
+                    hard_dt -= datetime.timedelta(days=1)
+                    if hard_dt.weekday() < 5:
+                        rem += 1
+                hard_cutoff_iso = hard_dt.isoformat()
+                conn.execute(
+                    "DELETE FROM trades WHERE account_key = ? AND source = 'API' AND trade_date <= ?",
+                    (acc_key, hard_cutoff_iso),
+                )
+                rem_api_rows = [
+                    dict(r)
+                    for r in conn.execute(
+                        "SELECT id, symbol, side, trade_date, quantity, price, currency FROM trades WHERE account_key = ? AND source = 'API' AND trade_date <= ? ORDER BY trade_date ASC, id ASC",
+                        (acc_key, max_trade_date_iso),
+                    ).fetchall()
+                ]
+                if rem_api_rows:
+                    b_from_iso = (cutoff_dt_obj - datetime.timedelta(days=12)).isoformat()
+                    b_pdf_rows = [
+                        dict(r)
+                        for r in conn.execute(
+                            "SELECT id, symbol, side, trade_date, quantity, price FROM trades WHERE account_key = ? AND source = 'PDF' AND trade_date >= ? ORDER BY trade_date ASC, id ASC",
+                            (acc_key, b_from_iso),
+                        ).fetchall()
+                    ]
+                    used_pdf_ids = set()
+                    api_ids_to_delete: List[int] = []
+                    for ar in rem_api_rows:
+                        a_dt = datetime.date.fromisoformat(str(ar["trade_date"])[:10])
+                        a_qty = float(ar["quantity"])
+                        a_price = float(ar["price"])
+                        q_tol = max(1e-5, a_qty * 1e-4)
+                        p_tol = max(0.03 if ar["currency"] == "USD" else 10.0, a_price * 0.008) if a_price > 0 else 0.0
+                        matched_pr = next(
+                            (
+                                pr
+                                for pr in b_pdf_rows
+                                if pr["id"] not in used_pdf_ids
+                                and pr["symbol"] == ar["symbol"]
+                                and pr["side"] == ar["side"]
+                                and 0 <= (datetime.date.fromisoformat(str(pr["trade_date"])[:10]) - a_dt).days <= 6
+                                and abs(float(pr["quantity"]) - a_qty) <= q_tol
+                                and (a_price <= 0 or float(pr["price"]) <= 0 or abs(float(pr["price"]) - a_price) <= p_tol)
+                            ),
+                            None,
+                        )
+                        if matched_pr:
+                            used_pdf_ids.add(matched_pr["id"])
+                            api_ids_to_delete.append(int(ar["id"]))
+                    if api_ids_to_delete:
+                        conn.executemany("DELETE FROM trades WHERE id = ?", [(i,) for i in api_ids_to_delete])
+            except Exception:
+                pass
 
         if not has_live_api_holdings:
             conn.execute("DELETE FROM holdings_snapshot WHERE account_key = ?", (acc_key,))
