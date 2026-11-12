@@ -12,6 +12,7 @@
   const TAX_PREF_STORAGE_KEY = "toss_exclude_tax_pref";
   const US_DIV_CUR_STORAGE_KEY = "toss_us_div_currency_pref";
   const STOCK_MONTHLY_PRIOR_PREF_KEY = "toss_stock_monthly_show_prior";
+  const STOCK_CHART_UNIT_PREF_KEY = "toss_stock_chart_unit_pref";
   const PBKDF2_ITERATIONS = 600000;
 
   const state = {
@@ -44,11 +45,14 @@
     selectedGrowthYear: { KRW: null, USD: null, TOTAL_KRW: null },
     lastGrowthSeries: { KRW: [], USD: [], TOTAL_KRW: [] },
     stockMonthlyShowPrior: localStorage.getItem(STOCK_MONTHLY_PRIOR_PREF_KEY) === "true",
+    stockChartUnit: localStorage.getItem(STOCK_CHART_UNIT_PREF_KEY) === "YEAR" ? "YEAR" : "MONTH",
     stockMonthlyRange: "12M",
     mainMonthlySymbol: null,
     detailMonthlyCollapsed: false,
     selectedMonthlyYm: { MAIN: null, DETAIL: null },
+    selectedStockYr: { MAIN: null, DETAIL: null },
     lastMonthlyBuilt: { MAIN: null, DETAIL: null },
+    lastStockYearlyBuilt: { MAIN: null, DETAIL: null },
     syncLogFilter: "ALL",
     syncLogs: [],
   };
@@ -1415,10 +1419,242 @@
     renderStockMonthlyChartSlot("MAIN", targetItem);
   }
 
+  function buildStockYearlyDividendSeries(item, exTax, usInKrw, includePrior) {
+    const dispCur = item.currency === "USD" && usInKrw ? "KRW" : item.currency;
+    const yrMap = new Map();
+    let allPriorTotal = 0;
+    let allPriorCount = 0;
+    let firstPriorYm = null;
+    let allTossTotal = 0;
+    let allTossCount = 0;
+    let allExtTotal = 0;
+    let allExtCount = 0;
+
+    const pdfCutoff = state.portfolio?.pdfCutoffDate || "";
+    const cutoffYear = pdfCutoff ? parseInt(pdfCutoff.slice(0, 4), 10) : 0;
+    const cutoffMonth = pdfCutoff ? parseInt(pdfCutoff.slice(5, 7), 10) : 12;
+    const nowYear = new Date().getFullYear();
+
+    const ensureYr = (yr) => {
+      if (!yrMap.has(yr)) {
+        yrMap.set(yr, {
+          year: yr,
+          tossVal: 0,
+          extVal: 0,
+          priorVal: 0,
+          origUsdToss: 0,
+          origUsdExt: 0,
+          origUsdPrior: 0,
+          krwToss: 0,
+          krwExt: 0,
+          krwPrior: 0,
+          tossCount: 0,
+          extCount: 0,
+          priorCount: 0,
+        });
+      }
+      return yrMap.get(yr);
+    };
+
+    (item.dividends || []).forEach((d) => {
+      const dt = String(d.pay_date || "");
+      if (!/^\d{4}/.test(dt)) return;
+      const yr = parseInt(dt.slice(0, 4), 10);
+      if (isNaN(yr) || yr < 1990 || yr > 2100) return;
+      const ym = dt.length >= 7 ? dt.slice(0, 7) : `${yr}-01`;
+      const isPrior = d.source === "PRIOR_BROKER" || d.source === "PRIOR_YEARLY";
+      const isExtDated = d.source === "EXT_DIV";
+      const nativeVal = Number(exTax ? d.net_amount : d.gross_amount) || 0;
+      const krwVal = Number(exTax ? d.krw_net : d.krw_gross) || 0;
+      const dispVal = item.currency === "USD" && usInKrw ? krwVal : nativeVal;
+      const b = ensureYr(yr);
+
+      if (isPrior) {
+        b.priorVal += dispVal;
+        b.origUsdPrior += nativeVal;
+        b.krwPrior += krwVal;
+        b.priorCount += 1;
+        allPriorTotal += dispVal;
+        allPriorCount += 1;
+        if (!firstPriorYm || ym < firstPriorYm) firstPriorYm = ym;
+      } else if (isExtDated) {
+        b.extVal += dispVal;
+        b.origUsdExt += nativeVal;
+        b.krwExt += krwVal;
+        if ((Number(d.gross_amount) || 0) > 0) {
+          b.extCount += 1;
+          allExtCount += 1;
+        }
+        allExtTotal += dispVal;
+      } else {
+        b.tossVal += dispVal;
+        b.origUsdToss += nativeVal;
+        b.krwToss += krwVal;
+        if ((Number(d.gross_amount) || 0) > 0) {
+          b.tossCount += 1;
+          allTossCount += 1;
+        }
+        allTossTotal += dispVal;
+      }
+    });
+
+    const activeYrs = Array.from(yrMap.keys())
+      .filter((yr) => {
+        const b = yrMap.get(yr);
+        const regV = b.tossVal + b.extVal;
+        const regC = b.tossCount + b.extCount;
+        const v = includePrior ? regV + b.priorVal : regV;
+        const c = includePrior ? regC + b.priorCount : regC;
+        return Math.abs(v) > 0.0001 || c > 0;
+      })
+      .sort((a, b) => a - b);
+
+    if (activeYrs.length === 0) {
+      return {
+        item,
+        dispCur,
+        series: [],
+        cagrInfo: null,
+        hasPrior: allPriorCount > 0,
+        allPriorTotal,
+        allPriorCount,
+        firstPriorYm,
+        hasExt: allExtCount > 0,
+        allExtTotal,
+        allExtCount,
+        allRegCount: allTossCount + allExtCount,
+        onlyPriorHidden: !includePrior && allPriorCount > 0,
+      };
+    }
+
+    const minY = activeYrs[0];
+    const maxY = activeYrs[activeYrs.length - 1];
+    const minMeaningful = dispCur === "KRW" ? 5000 : 5;
+    const series = [];
+
+    for (let y = minY; y <= maxY; y++) {
+      const b = yrMap.get(y) || {
+        tossVal: 0,
+        extVal: 0,
+        priorVal: 0,
+        origUsdToss: 0,
+        origUsdExt: 0,
+        origUsdPrior: 0,
+        krwToss: 0,
+        krwExt: 0,
+        krwPrior: 0,
+        tossCount: 0,
+        extCount: 0,
+        priorCount: 0,
+      };
+      const regVal = b.tossVal + b.extVal;
+      const regOrigUsd = b.origUsdToss + b.origUsdExt;
+      const regKrw = b.krwToss + b.krwExt;
+      const regCount = b.tossCount + b.extCount;
+      const totalVal = includePrior ? regVal + b.priorVal : regVal;
+      const origUsdVal = includePrior ? regOrigUsd + b.origUsdPrior : regOrigUsd;
+      const krwEquivVal = includePrior ? regKrw + b.krwPrior : regKrw;
+      const count = regCount + (includePrior ? b.priorCount : 0);
+
+      const isPartial =
+        (y === nowYear && new Date().getMonth() < 11) ||
+        (y === cutoffYear && cutoffMonth < 12 && y >= nowYear);
+      const elapsedMonths = isPartial
+        ? Math.max(1, cutoffYear === y ? cutoffMonth : new Date().getMonth() + 1)
+        : 12;
+
+      series.push({
+        year: y,
+        tossVal: b.tossVal,
+        extVal: b.extVal,
+        regVal,
+        priorVal: includePrior ? b.priorVal : 0,
+        totalVal,
+        origUsdVal,
+        krwEquivVal,
+        count,
+        isPartial,
+        elapsedMonths,
+        monthlyAvg: totalVal / elapsedMonths,
+        yoyDiff: null,
+        yoyPct: null,
+        yoyBadge: "",
+      });
+    }
+
+    for (let i = 0; i < series.length; i++) {
+      const curRow = series[i];
+      if (i === 0) {
+        curRow.yoyBadge = curRow.totalVal > 0 ? "첫해" : "-";
+        continue;
+      }
+      const prevVal = series[i - 1].totalVal;
+      curRow.yoyDiff = curRow.totalVal - prevVal;
+      if (prevVal <= 0) {
+        curRow.yoyBadge = curRow.totalVal > 0 ? "첫해" : "-";
+      } else if (prevVal < minMeaningful && curRow.totalVal >= minMeaningful) {
+        curRow.yoyBadge = "본격시작";
+      } else {
+        const pct = ((curRow.totalVal - prevVal) / prevVal) * 100;
+        curRow.yoyPct = pct;
+        curRow.yoyBadge = `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
+      }
+    }
+
+    const cagrInfo = computeCagrInfo(series, dispCur);
+    return {
+      item,
+      dispCur,
+      series,
+      cagrInfo,
+      hasPrior: allPriorCount > 0,
+      allPriorTotal,
+      allPriorCount,
+      firstPriorYm,
+      hasExt: allExtCount > 0,
+      allExtTotal,
+      allExtCount,
+      allRegCount: allTossCount + allExtCount,
+      onlyPriorHidden: false,
+    };
+  }
+
   function syncMonthlyControlsUi(slotKey, built) {
     const isMain = slotKey === "MAIN";
+    const isYearly = state.stockChartUnit === "YEAR";
+    const titleEl = $(isMain ? "mainMonthlyCardTitle" : "detailMonthlyCardTitle");
+    const cagrBadge = $(isMain ? "mainMonthlyCagrBadge" : "detailMonthlyCagrBadge");
+    const unitGrp = $(isMain ? "mainStockChartUnitGroup" : "detailStockChartUnitGroup");
     const priorBtn = $(isMain ? "mainToggleStockPriorBtn" : "detailToggleStockPriorBtn");
     const rangeGrp = $(isMain ? "mainMonthlyRangeGroup" : "detailMonthlyRangeGroup");
+
+    if (titleEl) {
+      titleEl.textContent = isMain
+        ? isYearly
+          ? "📊 개별 종목 연도별 배당금 그래프"
+          : "📊 개별 종목 월별 배당금 그래프"
+        : isYearly
+        ? "📊 연도별 배당금 추이"
+        : "📊 월별 배당금 추이";
+    }
+
+    if (cagrBadge) {
+      if (isYearly && built && built.cagrInfo) {
+        const ci = built.cagrInfo;
+        const sign = ci.cagr >= 0 ? "+" : "";
+        cagrBadge.textContent = `${ci.startYear}→${ci.endYear} 연평균 ${sign}${ci.cagr.toFixed(1)}%`;
+        cagrBadge.className = `badge ${ci.cagr >= 0 ? "badge-auto" : "badge-sell"}`;
+        cagrBadge.classList.remove("hidden");
+      } else {
+        cagrBadge.classList.add("hidden");
+      }
+    }
+
+    if (unitGrp) {
+      unitGrp.querySelectorAll(".seg-btn").forEach((b) => {
+        b.classList.toggle("active", b.dataset.munit === state.stockChartUnit);
+      });
+    }
 
     if (priorBtn) {
       const on = state.stockMonthlyShowPrior;
@@ -1435,6 +1671,7 @@
     }
 
     if (rangeGrp) {
+      rangeGrp.classList.toggle("hidden", isYearly);
       rangeGrp.querySelectorAll(".seg-btn").forEach((b) => {
         b.classList.toggle("active", b.dataset.mrange === state.stockMonthlyRange);
       });
@@ -1443,6 +1680,7 @@
 
   function renderMonthlyLegend(slotKey, built) {
     const isMain = slotKey === "MAIN";
+    const isYearly = state.stockChartUnit === "YEAR";
     const legendEl = $(isMain ? "mainMonthlyLegend" : "detailMonthlyLegend");
     if (!legendEl || !built) return;
     const { item, dispCur } = built;
@@ -1459,11 +1697,269 @@
       const stateTxt = built.hasPrior ? (on ? `(${amtHint.trim()} 표시 중)` : `(${amtHint.trim()} 숨김)`) : "";
       html += `<button type="button" class="monthly-legend-toggle ${on ? "is-on" : "is-off"}" data-enable-monthly-prior="1" title="클릭하여 타사 통입력 배당 보이기/숨기기 전환"><i class="legend-dot lump-bar"></i>타사 통입력 배당 ${escapeHtml(stateTxt)}</button>`;
     }
-    html += `<span class="growth-legend-item"><i class="legend-avg-dash"></i>지급월 평균선</span>`;
+    if (isYearly) {
+      html += `<span class="growth-legend-item"><i class="legend-line"></i>연간 성장 추세선</span>`;
+      html += `<span class="growth-legend-item"><i class="legend-avg-dash"></i>연평균선</span>`;
+    } else {
+      html += `<span class="growth-legend-item"><i class="legend-avg-dash"></i>지급월 평균선</span>`;
+    }
     legendEl.innerHTML = html;
   }
 
+  function renderStockYearlyChartSlot(slotKey, item) {
+    const isMain = slotKey === "MAIN";
+    const svgWrap = $(isMain ? "mainMonthlySvgWrap" : "detailMonthlySvgWrap");
+    const metaSub = $(isMain ? "mainMonthlyMetaSub" : "detailMonthlyMetaSub");
+    const inspector = $(isMain ? "mainMonthlyInspector" : "detailMonthlyInspector");
+    if (!svgWrap || !metaSub || !inspector || !item) return;
+
+    const built = buildStockYearlyDividendSeries(
+      item,
+      state.excludeTax,
+      state.usDivInKrw,
+      state.stockMonthlyShowPrior
+    );
+    state.lastStockYearlyBuilt[slotKey] = built;
+    syncMonthlyControlsUi(slotKey, built);
+    renderMonthlyLegend(slotKey, built);
+
+    const { series, dispCur } = built;
+    if (built.onlyPriorHidden) {
+      metaSub.textContent = `타사 통입력 배당(${formatMoney(built.allPriorTotal, dispCur)})만 등록된 종목입니다.`;
+      svgWrap.innerHTML = `
+        <div class="empty-state" style="width:100%;padding:28px 14px;font-size:13px;">
+          <div style="margin-bottom:10px;color:var(--text-secondary);">
+            이 종목은 한 번에 합산 입력한 <strong>타사 통입력 배당(${formatMoney(built.allPriorTotal, dispCur)})</strong>만 있어 현재 연도별 그래프에서 숨겨져 있습니다.
+          </div>
+          <button type="button" class="btn btn-prior-toggle-on btn-sm" data-enable-monthly-prior="1">🟧 타사 통입력 보이기 켜기</button>
+        </div>
+      `;
+      inspector.textContent = "상단 '타사 통입력 보이기' 버튼을 누르면 주황색 타사 통입력 연도 막대가 표시됩니다.";
+      return;
+    }
+
+    if (!series || series.length === 0) {
+      metaSub.textContent = "집계된 연도별 배당 내역 없음";
+      svgWrap.innerHTML = `<div class="empty-state" style="width:100%;padding:28px 14px;font-size:13px;">이 종목의 배당 수령 기록이 아직 없습니다.</div>`;
+      inspector.textContent = "배당 내역이 추가되면 연도별 배당금 막대그래프가 자동으로 생성됩니다.";
+      return;
+    }
+
+    const activeYears = series.filter((r) => r.totalVal > 0.0001);
+    const sumAll = series.reduce((acc, r) => acc + r.totalVal, 0);
+    const avgPerYear = activeYears.length > 0 ? sumAll / activeYears.length : 0;
+    const peakRow = series.reduce((best, r) => (r.totalVal > best.totalVal ? r : best), series[0]);
+    const startYr = series[0].year;
+    const endYr = series[series.length - 1].year;
+    const hiddenNote =
+      !state.stockMonthlyShowPrior && built.hasPrior
+        ? ` · 타사통입력 ${formatMoney(built.allPriorTotal, dispCur)} 제외됨`
+        : state.stockMonthlyShowPrior && built.hasPrior
+        ? ` · 타사통입력(주황) 포함`
+        : "";
+    metaSub.textContent = `${startYr}~${endYr}년 누적 ${formatMoney(sumAll, dispCur)} · 연평균 ${formatMoney(avgPerYear, dispCur)} (${activeYears.length}개년) · 최고 ${peakRow.year}년 (${formatMoney(peakRow.totalVal, dispCur)})${hiddenNote}`;
+
+    if (!state.selectedStockYr[slotKey] || !series.some((s) => s.year === state.selectedStockYr[slotKey])) {
+      const lastPos = [...series].reverse().find((s) => s.totalVal > 0.0001) || series[series.length - 1];
+      state.selectedStockYr[slotKey] = lastPos.year;
+    }
+    const selYr = state.selectedStockYr[slotKey];
+
+    const n = series.length;
+    const baseW = isMain ? 920 : 660;
+    const W = Math.max(baseW, n * 68 + 32);
+    const H = isMain ? 228 : 208;
+    const padL = 16;
+    const padR = 16;
+    const padTop = 44;
+    const padBot = 38;
+    const plotW = W - padL - padR;
+    const plotH = H - padTop - padBot;
+    const baseY = padTop + plotH;
+
+    const maxVal = Math.max(...series.map((s) => Math.max(0, s.totalVal)), 1);
+    const slotW = plotW / n;
+    const barW = Math.min(58, Math.max(22, slotW * 0.48));
+    const tossColor = item.market === "KR" ? "#00a86b" : "#3182f6";
+    const extColor = "#8b5cf6";
+    const hatchId = `lumpYrHatch_${slotKey}`;
+    const defsItems = [
+      `<pattern id="${hatchId}" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">`,
+      `<rect width="6" height="6" fill="#f59e0b" />`,
+      `<line x1="0" y1="0" x2="0" y2="6" stroke="rgba(255,255,255,0.28)" stroke-width="2" />`,
+      `</pattern>`,
+    ];
+
+    const gridLines = [0, 0.5, 1]
+      .map((ratio) => {
+        const gy = baseY - plotH * ratio;
+        return `<line x1="${padL}" y1="${gy.toFixed(1)}" x2="${W - padR}" y2="${gy.toFixed(1)}" stroke="#e5e8eb" stroke-width="1" ${ratio > 0 ? 'stroke-dasharray="3 3"' : ""} />`;
+      })
+      .join("");
+
+    let avgLineHtml = "";
+    if (activeYears.length >= 2 && avgPerYear > 0) {
+      const avgY = baseY - Math.min(plotH, (avgPerYear / maxVal) * plotH);
+      avgLineHtml = `
+        <line x1="${padL}" y1="${avgY.toFixed(1)}" x2="${W - padR}" y2="${avgY.toFixed(1)}" stroke="#0f766e" stroke-width="1.3" stroke-dasharray="4 3" opacity="0.65" pointer-events="none" />
+        <text x="${W - padR - 2}" y="${Math.max(12, avgY - 4).toFixed(1)}" text-anchor="end" font-size="10" font-weight="700" fill="#0f766e" opacity="0.85" pointer-events="none">연평균 ${escapeHtml(formatCompactChartAmount(avgPerYear, dispCur))}</text>
+      `;
+    }
+
+    const trendPoints = [];
+    const barGroups = series
+      .map((row, idx) => {
+        const cx = padL + slotW * idx + slotW / 2;
+        const bx = cx - barW / 2;
+        const posTotal = Math.max(0, row.totalVal);
+        const totH = posTotal > 0 ? Math.max(3, (posTotal / maxVal) * plotH) : 0;
+        const topY = baseY - totH;
+        trendPoints.push({ cx, topY });
+        const isSel = row.year === selYr;
+        const yoyColor =
+          row.yoyPct === null
+            ? "#6b7684"
+            : row.yoyPct >= 0
+            ? "#f04452"
+            : "#3182f6";
+
+        let rectsHtml = "";
+        if (totH > 0) {
+          const rx = Math.min(6, barW / 2);
+          const rawSegs = [
+            { val: Math.max(0, row.tossVal), fill: tossColor, stroke: null },
+            { val: Math.max(0, row.extVal), fill: extColor, stroke: null },
+            { val: Math.max(0, row.priorVal), fill: `url(#${hatchId})`, stroke: "#d97706" },
+          ].filter((s) => s.val > 0.0001);
+          const sumPos = rawSegs.reduce((acc, s) => acc + s.val, 0);
+          const opVal = row.isPartial ? (isSel ? "0.9" : "0.78") : isSel ? "1" : "0.93";
+
+          if (rawSegs.length <= 1) {
+            const singleFill = rawSegs.length === 1 ? rawSegs[0].fill : tossColor;
+            const singleStroke = rawSegs.length === 1 && rawSegs[0].stroke ? ` stroke="${rawSegs[0].stroke}" stroke-width="0.9"` : "";
+            rectsHtml = `<rect x="${bx.toFixed(1)}" y="${topY.toFixed(1)}" width="${barW.toFixed(1)}" height="${totH.toFixed(1)}" rx="${rx.toFixed(1)}" fill="${singleFill}"${singleStroke} opacity="${opVal}" />`;
+          } else {
+            const clipId = `ybarClip_${slotKey}_${idx}`;
+            defsItems.push(
+              `<clipPath id="${clipId}"><rect x="${bx.toFixed(1)}" y="${topY.toFixed(1)}" width="${barW.toFixed(1)}" height="${totH.toFixed(1)}" rx="${rx.toFixed(1)}" /></clipPath>`
+            );
+            let curBottom = baseY;
+            let innerSegs = "";
+            let sepLines = "";
+            rawSegs.forEach((seg, sIdx) => {
+              const segH =
+                sIdx === rawSegs.length - 1
+                  ? Math.max(0.5, curBottom - topY)
+                  : totH * (seg.val / sumPos);
+              const segY = curBottom - segH;
+              innerSegs += `<rect x="${bx.toFixed(1)}" y="${segY.toFixed(1)}" width="${barW.toFixed(1)}" height="${(segH + 0.3).toFixed(1)}" fill="${seg.fill}" opacity="${opVal}" />`;
+              if (sIdx < rawSegs.length - 1 && segH > 1.2) {
+                sepLines += `<line x1="${bx.toFixed(1)}" y1="${segY.toFixed(1)}" x2="${(bx + barW).toFixed(1)}" y2="${segY.toFixed(1)}" stroke="#ffffff" stroke-width="1.8" />`;
+              }
+              curBottom = segY;
+            });
+            rectsHtml = `<g clip-path="url(#${clipId})">${innerSegs}${sepLines}</g>`;
+          }
+        } else if (row.totalVal < -0.0001) {
+          rectsHtml = `<rect x="${bx.toFixed(1)}" y="${(baseY - 3).toFixed(1)}" width="${barW.toFixed(1)}" height="3" rx="1.5" fill="#94a3b8" />`;
+        }
+
+        const amtTxt = formatCompactChartAmount(row.totalVal, dispCur);
+        return `
+          <g class="monthly-bar-group ${isSel ? "selected" : ""}" data-monthly-slot="${slotKey}" data-stock-yr="${row.year}">
+            <rect class="bar-hit" x="${(padL + slotW * idx + 2).toFixed(1)}" y="6" width="${Math.max(10, slotW - 4).toFixed(1)}" height="${H - 10}" rx="8" />
+            ${rectsHtml}
+            <text x="${cx.toFixed(1)}" y="${(topY - 19).toFixed(1)}" text-anchor="middle" font-size="10.5" font-weight="800" fill="${yoyColor}">${escapeHtml(row.yoyBadge)}</text>
+            <text x="${cx.toFixed(1)}" y="${(topY - 6).toFixed(1)}" text-anchor="middle" font-size="11" font-weight="800" fill="${isSel ? "#191f28" : "#334155"}">${escapeHtml(amtTxt)}</text>
+            <text x="${cx.toFixed(1)}" y="${baseY + 16}" text-anchor="middle" font-size="11.5" font-weight="${isSel ? "800" : "700"}" fill="${isSel ? "#191f28" : "#4e5968"}">${row.year}</text>
+            ${
+              row.isPartial
+                ? `<text x="${cx.toFixed(1)}" y="${baseY + 29}" text-anchor="middle" font-size="9.5" font-weight="700" fill="#8b95a1">진행중</text>`
+                : ""
+            }
+          </g>
+        `;
+      })
+      .join("");
+
+    const polyPts = trendPoints.map((p) => `${p.cx.toFixed(1)},${p.topY.toFixed(1)}`).join(" ");
+    const trendLine =
+      trendPoints.length >= 2
+        ? `<polyline points="${polyPts}" fill="none" stroke="#f04452" stroke-width="2" stroke-opacity="0.72" stroke-linecap="round" stroke-linejoin="round" pointer-events="none" />` +
+          trendPoints
+            .map(
+              (p) =>
+                `<circle cx="${p.cx.toFixed(1)}" cy="${p.topY.toFixed(1)}" r="3.2" fill="#ffffff" stroke="#f04452" stroke-width="2" pointer-events="none" />`
+            )
+            .join("")
+        : "";
+
+    const defsHtml = `<defs>${defsItems.join("")}</defs>`;
+    const svgStyle = W > baseW ? `style="min-width:${W}px;width:${W}px;height:auto;"` : `style="width:100%;height:auto;"`;
+    svgWrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" ${svgStyle} role="img" aria-label="${escapeHtml(item.name)} 연도별 배당금 그래프">${defsHtml}${gridLines}${avgLineHtml}${barGroups}${trendLine}</svg>`;
+    renderStockYearlyInspector(slotKey, selYr);
+  }
+
+  function renderStockYearlyInspector(slotKey, year) {
+    const isMain = slotKey === "MAIN";
+    const el = $(isMain ? "mainMonthlyInspector" : "detailMonthlyInspector");
+    const built = state.lastStockYearlyBuilt[slotKey];
+    if (!el || !built || !built.series.length) return;
+
+    const row = built.series.find((s) => s.year === Number(year)) || built.series[built.series.length - 1];
+    const { item, dispCur } = built;
+
+    let subCurrencyHtml = "";
+    if (item.currency === "USD") {
+      if (state.usDivInKrw && Math.abs(row.origUsdVal) > 0.0001) {
+        subCurrencyHtml += ` <span style="color:var(--text-secondary);">(원래 ${formatMoney(row.origUsdVal, "USD")})</span>`;
+      } else if (!state.usDivInKrw && Math.abs(row.krwEquivVal) >= 1) {
+        subCurrencyHtml += ` <span style="color:var(--text-secondary);">(입금원화 ${formatMoney(row.krwEquivVal, "KRW")})</span>`;
+      }
+    }
+    if (Math.abs(row.extVal) > 0.0001 || Math.abs(row.priorVal) > 0.0001) {
+      const tossCol = item.market === "KR" ? "#00875a" : "#1d4ed8";
+      const breakdownParts = [];
+      if (Math.abs(row.tossVal) > 0.0001) {
+        breakdownParts.push(`<span style="color:${tossCol};font-weight:700;">토스 ${formatMoney(row.tossVal, dispCur)}</span>`);
+      }
+      if (Math.abs(row.extVal) > 0.0001) {
+        breakdownParts.push(`<span style="color:#7c3aed;font-weight:700;">타사건별 ${formatMoney(row.extVal, dispCur)}</span>`);
+      }
+      if (Math.abs(row.priorVal) > 0.0001) {
+        breakdownParts.push(`<span style="color:#b45309;font-weight:700;">타사통입력 ${formatMoney(row.priorVal, dispCur)}</span>`);
+      }
+      if (breakdownParts.length > 0) {
+        subCurrencyHtml += ` <span style="color:var(--text-muted);">(${breakdownParts.join(" + ")})</span>`;
+      }
+    }
+
+    let yoyHtml = `<span style="color:var(--text-muted);">비교 기준 첫해</span>`;
+    if (Math.abs(row.totalVal) <= 0.0001 && row.yoyDiff === null) {
+      yoyHtml = `<span style="color:var(--text-muted);">해당 연도 배당 지급 없음</span>`;
+    } else if (row.yoyDiff !== null) {
+      const cls = pnlClass(row.yoyDiff);
+      const pctPart = row.yoyPct !== null ? ` (${row.yoyPct >= 0 ? "+" : ""}${row.yoyPct.toFixed(1)}%)` : ` (${row.yoyBadge})`;
+      yoyHtml = `전년 대비 <strong class="${cls}">${formatMoney(row.yoyDiff, dispCur, true)}${escapeHtml(pctPart)}</strong>`;
+    }
+    const moLabel = row.isPartial ? `월평균(${row.elapsedMonths}개월 기준)` : "월평균";
+
+    el.innerHTML = `
+      <div>
+        <strong style="color:var(--text-primary);">${row.year}년${row.isPartial ? " (진행중)" : ""}:</strong>
+        <strong class="${row.totalVal > 0 ? "val-div" : pnlClass(row.totalVal)}" style="margin-left:4px;">${formatMoney(row.totalVal, dispCur)}</strong>${subCurrencyHtml}
+      </div>
+      <div>
+        ${moLabel} <strong>${formatMoney(row.monthlyAvg, dispCur)}</strong> · ${row.count > 0 ? `수령 <strong>${row.count}건</strong> · ` : ""}${yoyHtml}
+      </div>
+    `;
+  }
+
   function renderStockMonthlyChartSlot(slotKey, item) {
+    if (state.stockChartUnit === "YEAR") {
+      renderStockYearlyChartSlot(slotKey, item);
+      return;
+    }
     const isMain = slotKey === "MAIN";
     const svgWrap = $(isMain ? "mainMonthlySvgWrap" : "detailMonthlySvgWrap");
     const metaSub = $(isMain ? "mainMonthlyMetaSub" : "detailMonthlyMetaSub");
@@ -1718,18 +2214,38 @@
     localStorage.setItem(STOCK_MONTHLY_PRIOR_PREF_KEY, String(state.stockMonthlyShowPrior));
 
     if (state.stockMonthlyShowPrior) {
-      const refBuilt = state.lastMonthlyBuilt[preferSlot] || state.lastMonthlyBuilt.MAIN;
-      if (refBuilt && refBuilt.hasPrior && refBuilt.firstPriorYm) {
-        const curSeries = refBuilt.series || [];
-        const inCurrentWindow = curSeries.some((s) => s.ym === refBuilt.firstPriorYm);
-        if (!inCurrentWindow && state.stockMonthlyRange !== "ALL") {
-          state.stockMonthlyRange = "ALL";
-          showToast("타사 통입력 배당이 과거 연월에 있어 전체 기간으로 자동 전환했습니다.");
+      if (state.stockChartUnit === "YEAR") {
+        const refYrBuilt = state.lastStockYearlyBuilt[preferSlot] || state.lastStockYearlyBuilt.MAIN;
+        if (refYrBuilt && refYrBuilt.hasPrior && refYrBuilt.firstPriorYm) {
+          state.selectedStockYr[preferSlot] = parseInt(refYrBuilt.firstPriorYm.slice(0, 4), 10);
         }
-        state.selectedMonthlyYm[preferSlot] = refBuilt.firstPriorYm;
+      } else {
+        const refBuilt = state.lastMonthlyBuilt[preferSlot] || state.lastMonthlyBuilt.MAIN;
+        if (refBuilt && refBuilt.hasPrior && refBuilt.firstPriorYm) {
+          const curSeries = refBuilt.series || [];
+          const inCurrentWindow = curSeries.some((s) => s.ym === refBuilt.firstPriorYm);
+          if (!inCurrentWindow && state.stockMonthlyRange !== "ALL") {
+            state.stockMonthlyRange = "ALL";
+            showToast("타사 통입력 배당이 과거 연월에 있어 전체 기간으로 자동 전환했습니다.");
+          }
+          state.selectedMonthlyYm[preferSlot] = refBuilt.firstPriorYm;
+        }
       }
     }
 
+    if (state.portfolio) {
+      renderMainStockMonthlyExplorer(state.portfolio.items);
+      if (state.activeDetailSymbol) {
+        renderDetailDrawer(state.activeDetailSymbol);
+      }
+    }
+  }
+
+  function setStockChartUnit(newUnit) {
+    const normalized = newUnit === "YEAR" ? "YEAR" : "MONTH";
+    if (state.stockChartUnit === normalized) return;
+    state.stockChartUnit = normalized;
+    localStorage.setItem(STOCK_CHART_UNIT_PREF_KEY, normalized);
     if (state.portfolio) {
       renderMainStockMonthlyExplorer(state.portfolio.items);
       if (state.activeDetailSymbol) {
@@ -1934,6 +2450,7 @@
     if (state.activeDetailSymbol !== symbol) {
       state.detailTradeFilter = "ALL";
       state.selectedMonthlyYm.DETAIL = null;
+      state.selectedStockYr.DETAIL = null;
     }
     state.activeDetailSymbol = symbol;
     const found = (state.portfolio?.items || []).find((x) => x.symbol === symbol);
@@ -3046,10 +3563,11 @@
     $("totalKrwGrowthSvgWrap").addEventListener("mouseover", handleGrowthBarInteract);
     $("totalKrwGrowthSvgWrap").addEventListener("click", handleGrowthBarInteract);
 
-    // 개별 종목별 월별 배당금 그래프 이벤트
+    // 개별 종목별 월별·연도별 배당금 그래프 이벤트
     $("mainMonthlyStockSelect")?.addEventListener("change", (e) => {
       state.mainMonthlySymbol = e.target.value;
       state.selectedMonthlyYm.MAIN = null;
+      state.selectedStockYr.MAIN = null;
       if (state.portfolio) renderMainStockMonthlyExplorer(state.portfolio.items);
     });
     const stepMainMonthlyStock = (delta) => {
@@ -3060,6 +3578,7 @@
       const nextIdx = ((curIdx >= 0 ? curIdx : 0) + delta + eligible.length) % eligible.length;
       state.mainMonthlySymbol = eligible[nextIdx].symbol;
       state.selectedMonthlyYm.MAIN = null;
+      state.selectedStockYr.MAIN = null;
       renderMainStockMonthlyExplorer(state.portfolio.items);
     };
     $("prevMonthlyStockBtn")?.addEventListener("click", () => stepMainMonthlyStock(-1));
@@ -3069,6 +3588,14 @@
     });
     $("mainToggleStockPriorBtn")?.addEventListener("click", () => toggleStockMonthlyPrior("MAIN"));
     $("detailToggleStockPriorBtn")?.addEventListener("click", () => toggleStockMonthlyPrior("DETAIL"));
+
+    const handleStockChartUnitClick = (e) => {
+      const btn = e.target.closest(".seg-btn");
+      if (!btn || !btn.dataset.munit) return;
+      setStockChartUnit(btn.dataset.munit);
+    };
+    $("mainStockChartUnitGroup")?.addEventListener("click", handleStockChartUnitClick);
+    $("detailStockChartUnitGroup")?.addEventListener("click", handleStockChartUnitClick);
 
     const handleMonthlyRangeClick = (e) => {
       const btn = e.target.closest(".seg-btn");
@@ -3095,10 +3622,23 @@
       const grp = e.target.closest(".monthly-bar-group");
       if (!grp) return;
       const slotKey = grp.dataset.monthlySlot;
-      const ym = grp.dataset.monthlyYm;
-      if (!slotKey || !ym || state.selectedMonthlyYm[slotKey] === ym) return;
-      state.selectedMonthlyYm[slotKey] = ym;
+      if (!slotKey) return;
       const wrapEl = $(slotKey === "MAIN" ? "mainMonthlySvgWrap" : "detailMonthlySvgWrap");
+      if (grp.dataset.stockYr) {
+        const yr = Number(grp.dataset.stockYr);
+        if (!yr || state.selectedStockYr[slotKey] === yr) return;
+        state.selectedStockYr[slotKey] = yr;
+        if (wrapEl) {
+          wrapEl.querySelectorAll(`.monthly-bar-group[data-monthly-slot="${slotKey}"]`).forEach((el) => {
+            el.classList.toggle("selected", Number(el.dataset.stockYr) === yr);
+          });
+        }
+        renderStockYearlyInspector(slotKey, yr);
+        return;
+      }
+      const ym = grp.dataset.monthlyYm;
+      if (!ym || state.selectedMonthlyYm[slotKey] === ym) return;
+      state.selectedMonthlyYm[slotKey] = ym;
       if (wrapEl) {
         wrapEl.querySelectorAll(`.monthly-bar-group[data-monthly-slot="${slotKey}"]`).forEach((el) => {
           el.classList.toggle("selected", el.dataset.monthlyYm === ym);
