@@ -1,0 +1,868 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>토스증권 배당·매매 통합 수익 대시보드 (열람 전용)</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+
+  <!-- =====================================================================
+       1. 최초 설정 화면 (API 키 로컬 암호화 저장 + 6자리 PIN 생성)
+       ===================================================================== -->
+  <section id="setupScreen" class="auth-wrapper hidden">
+    <div class="auth-card">
+      <div class="brand-badge">🛡️ 열람 전용 · Windows &amp; Mac 로컬 암호화</div>
+      <h1 class="auth-title">토스증권 배당·매매 대시보드 시작</h1>
+      <p class="auth-subtitle">
+        이 프로그램은 <strong>100% 조회·열람 전용</strong>이며 매수·매도 주문 기능은 일체 포함되어 있지 않습니다. 모든 데이터와 API 키는 외부 전송 없이 내 PC에만 암호화 저장됩니다.
+      </p>
+
+      <div class="pdf-guide-box" style="margin-bottom:16px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+          <div>
+            <strong>📄 1단계 권장: 토스증권 거래내역서 PDF 등록</strong><br />
+            <span style="font-size:12px;color:var(--text-secondary);">과거 매수·매도 단가와 실제 입금 배당금을 정확히 합산하려면 토스 앱에서 거래내역서를 PDF로 받아 먼저 올려주세요.</span>
+          </div>
+          <button type="button" id="openPdfUploadFromSetupBtn" class="btn btn-outline btn-sm" style="background:#fff;">📄 PDF 업로드 · 발급방법</button>
+        </div>
+      </div>
+
+      <div class="ip-helper-box">
+        <div>
+          <strong>허용 IP 등록 안내:</strong> 토스증권 PC웹(WTS) &gt; 설정 &gt; Open API &gt; 허용 IP 관리에 현재 사용 중인 인터넷의 공인 IP가 등록되어 있어야 정상 조회됩니다.
+        </div>
+      </div>
+
+      <form id="setupForm">
+        <div class="form-group">
+          <label class="form-label" for="setupClientId">
+            <span>Client ID</span>
+            <a href="https://developers.tossinvest.com/docs" target="_blank" rel="noopener" style="color:var(--toss-blue);text-decoration:none;font-size:12px;">공식 매뉴얼 ↗</a>
+          </label>
+          <input id="setupClientId" type="text" class="form-input" placeholder="발급받은 Client ID 붙여넣기" autocomplete="off" required />
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="setupClientSecret">
+            <span>Client Secret</span>
+            <button type="button" id="toggleSecretVisBtn" class="link-btn" style="font-size:12px;">표시</button>
+          </label>
+          <input id="setupClientSecret" type="password" class="form-input" placeholder="발급받은 Client Secret 붙여넣기" autocomplete="new-password" required />
+        </div>
+
+        <div class="form-row-2">
+          <div class="form-group">
+            <label class="form-label" for="setupPin">6자리 PIN 번호 설정</label>
+            <input id="setupPin" type="password" inputmode="numeric" maxlength="6" pattern="\d{6}" class="form-input" placeholder="숫자 6자리" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="setupPinConfirm">PIN 번호 확인</label>
+            <input id="setupPinConfirm" type="password" inputmode="numeric" maxlength="6" pattern="\d{6}" class="form-input" placeholder="다시 입력" required />
+          </div>
+        </div>
+
+        <div class="security-callout">
+          • <strong>열람 전용 보호:</strong> 잔고·체결내역·시세 조회(<code>GET</code>)만 허용하며 주문 생성·정정·취소 API 호출은 코드에서 원천 차단되어 있습니다.<br />
+          • <strong>증분 동기화:</strong> 거래내역서 PDF 확정 원장 이후의 신규 데이터만 빠르게 이어 붙여 저장합니다.
+        </div>
+
+        <button type="submit" id="setupSubmitBtn" class="btn btn-primary btn-block">
+          암호화 저장 후 계좌 불러오기
+        </button>
+      </form>
+
+      <div class="auth-footer-links" style="flex-wrap:wrap;">
+        <button type="button" id="enterLedgerPreviewFromSetupBtn" class="link-btn">
+          API 연결 없이 PDF 원장 대시보드 바로 열기 →
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- =====================================================================
+       2. 재접속 시 6자리 PIN 잠금 해제 화면 (핸드폰 비밀번호 스타일)
+       ===================================================================== -->
+  <section id="pinScreen" class="auth-wrapper hidden">
+    <div class="auth-card pin-card">
+      <div class="brand-badge">🔐 암호화 잠금 상태 · 열람 전용</div>
+      <h1 class="auth-title">PIN 번호 6자리 입력</h1>
+      <p class="auth-subtitle">설정하신 6자리 숫자를 입력하면 포트폴리오 열람 잠금이 해제됩니다.</p>
+
+      <div id="pinDots" class="pin-dots">
+        <span class="pin-dot"></span>
+        <span class="pin-dot"></span>
+        <span class="pin-dot"></span>
+        <span class="pin-dot"></span>
+        <span class="pin-dot"></span>
+        <span class="pin-dot"></span>
+      </div>
+
+      <div id="pinErrorMsg" class="pin-error-msg"></div>
+
+      <div class="pin-keypad" id="pinKeypad">
+        <button type="button" class="pin-key" data-digit="1">1</button>
+        <button type="button" class="pin-key" data-digit="2">2</button>
+        <button type="button" class="pin-key" data-digit="3">3</button>
+        <button type="button" class="pin-key" data-digit="4">4</button>
+        <button type="button" class="pin-key" data-digit="5">5</button>
+        <button type="button" class="pin-key" data-digit="6">6</button>
+        <button type="button" class="pin-key" data-digit="7">7</button>
+        <button type="button" class="pin-key" data-digit="8">8</button>
+        <button type="button" class="pin-key" data-digit="9">9</button>
+        <button type="button" class="pin-key sub-key" data-action="clear">전체지움</button>
+        <button type="button" class="pin-key" data-digit="0">0</button>
+        <button type="button" class="pin-key sub-key" data-action="backspace">⌫</button>
+      </div>
+
+      <div class="auth-footer-links">
+        <button type="button" id="openChangePinModalBtn" class="link-btn">PIN 번호 변경</button>
+        <button type="button" id="resetVaultBtn" class="link-btn" style="color:var(--up-red);">API 키 재설정</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- =====================================================================
+       3. 메인 대시보드 화면 (100% 열람 전용)
+       ===================================================================== -->
+  <main id="dashboardScreen" class="app-shell hidden">
+
+    <!-- 상단 바 -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="logo-mark">T</div>
+        <div class="app-heading">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <h1>토스증권 배당·매매 통합 수익</h1>
+            <span class="badge" style="background:#e6f7f0;color:#00875a;padding:3px 8px;font-size:11.5px;">🛡️ 100% 열람 전용 (주문 기능 없음)</span>
+          </div>
+          <p id="syncStatusText">원장 불러오는 중...</p>
+        </div>
+        <select id="accountSelector" class="form-select hidden" style="width:auto;padding:7px 12px;font-size:13px;"></select>
+      </div>
+
+      <div class="topbar-right">
+        <button type="button" id="openPriorBrokerModalBtn" class="btn btn-prior btn-sm">🏦 종목별 타사배당</button>
+        <button type="button" id="openYearlyPriorModalBtn" class="btn btn-prior btn-sm">📅 연도별 타사배당 (2019~)</button>
+        <button type="button" id="openAddRecordModalBtn" class="btn btn-outline btn-sm">+ 배당 직접 추가</button>
+        <button type="button" id="openBulkImportModalBtn" class="btn btn-outline btn-sm">📄 PDF 등록 · 관리</button>
+        <button type="button" id="openSyncLogModalBtn" class="btn btn-outline btn-sm" title="토스 API 증분 동기화 및 이후 배당 갱신 시 반영된 종목·수량·금액 상세 이력을 확인합니다.">📜 동기화 로그 <span id="syncLogNewBadge" class="log-unread-dot hidden">N</span></button>
+        <button type="button" id="autoSyncDivBtn" class="btn btn-div btn-sm">💸 이후 배당 갱신</button>
+        <button type="button" id="refreshPricesBtn" class="btn btn-quote btn-sm" title="보유 종목의 실시간 현재가를 새로고침하여 평가금액·매매손익·합산수익률을 즉시 갱신합니다.">⚡ 현재가 새로고침</button>
+        <button type="button" id="syncApiBtn" class="btn btn-primary btn-sm">↻ 토스 API 증분 동기화</button>
+        <button type="button" id="lockVaultBtn" class="btn btn-secondary btn-sm">🔒 잠금</button>
+      </div>
+    </header>
+
+    <!-- 로컬 원장 단독 열람 배너 -->
+    <div id="demoBanner" class="demo-banner hidden">
+      <div>
+        <strong>📄 로컬 PDF 확정 원장 열람 모드입니다.</strong>
+        실시간 시세 반영 및 기준일 이후 신규 거래 증분 동기화를 사용하려면 API 키를 연결해주세요.
+      </div>
+      <button type="button" id="exitDemoToAuthBtn" class="btn btn-primary btn-sm">토스증권 API 연결 화면으로</button>
+    </div>
+
+    <!-- 원장 + 증분 동기화 안내 배너 -->
+    <div class="api-note-banner">
+      <div id="ledgerBannerText">
+        💡 <strong>PDF 확정 원장 + 이후 증분 동기화:</strong> 토스증권에서 발급받은 <strong>거래내역서 PDF</strong>로 과거 매매·타사입고·실수령 배당 내역을 확정 보관하고, 이후 신규 거래와 실시간 현재가는 <strong>토스 API 증분 동기화</strong>로 중복 없이 이어 붙입니다.
+      </div>
+      <button type="button" id="bannerUploadPdfBtn" class="btn btn-outline btn-sm" style="flex-shrink:0;">📄 거래내역서 PDF 올리기</button>
+    </div>
+
+    <!-- 세금 제외 ON/OFF 핵심 컨트롤 바 (기본값: ON = 세금 제외 실수령 기준) -->
+    <section class="tax-control-bar">
+      <div class="tax-toggle-wrap">
+        <label class="switch" title="세금 제외 보기 켜기/끄기">
+          <input type="checkbox" id="excludeTaxToggle" checked />
+          <span class="slider"></span>
+        </label>
+        <div>
+          <div class="tax-label-title">
+            <span>세금 제외해서 보기 (실수령 순수익 기준)</span>
+            <span id="taxModeBadge" class="tax-mode-pill">세후 기준 ON</span>
+          </div>
+          <p id="taxModeDesc" class="tax-label-desc">
+            배당소득세(세금환급·원화징수 재정산 반영)와 매수·매도 제세금·수수료를 모두 차감한 실질 순수익을 표시하고 있습니다.
+          </p>
+        </div>
+      </div>
+
+      <div class="tax-summary-pills" style="align-items:center;">
+        <div style="display:inline-flex;align-items:center;gap:8px;background:var(--surface-subtle);border:1px solid var(--border);padding:5px 10px;border-radius:12px;">
+          <span style="font-size:12.5px;font-weight:700;color:var(--text-secondary);">미국 배당 표시:</span>
+          <div class="segmented-group" id="usDivCurrencyGroup" style="padding:2px;">
+            <button type="button" class="seg-btn active" style="padding:5px 10px;font-size:12px;" data-usdivcur="USD">$ 달러 (기본)</button>
+            <button type="button" class="seg-btn" style="padding:5px 10px;font-size:12px;" data-usdivcur="KRW">₩ 원화 (입금시점 환율)</button>
+          </div>
+        </div>
+        <div id="combinedKrwDivChip" class="tax-chip hidden" style="background:var(--div-green-soft);border-color:#a7f3d0;color:#00875a;">
+          🇰🇷+🇺🇸 배당 원화 총합계: <strong id="combinedKrwDivText" style="color:#00875a;">0원</strong>
+        </div>
+        <div class="tax-chip">
+          국내 차감 세금: <strong id="krwTotalTaxText">0원</strong>
+        </div>
+        <div class="tax-chip">
+          미국 차감 세금: <strong id="usdTotalTaxText">$0.00</strong>
+        </div>
+      </div>
+    </section>
+
+    <!-- 통화별 요약 카드 (국내주식 원화 KRW / 미국주식 달러 USD 엄격 분리) -->
+    <section class="summary-grid">
+      <!-- 국내주식 (KRW) -->
+      <div class="currency-card">
+        <div class="currency-card-header">
+          <div class="currency-title">🇰🇷 국내주식 통합 수익 (원화 KRW)</div>
+          <span id="krwStockCountTag" class="stock-count-tag">보유 0 · 매도완료 0</span>
+        </div>
+        <div class="hero-return-label" id="krwHeroLabel">매매 + 배당 합산 순수익 (세금 제외)</div>
+        <div class="hero-return-row">
+          <div id="krwTotalReturnVal" class="hero-return-amount">0원</div>
+          <span id="krwTotalReturnRate" class="hero-return-rate bg-zero">0.00%</span>
+        </div>
+        <div class="sub-metrics-grid">
+          <div class="sub-metric">
+            <div class="sub-metric-label">매매 손익 (평가 + 실현)</div>
+            <div id="krwCapitalPnlVal" class="sub-metric-val">0원</div>
+            <div id="krwCapitalPnlSub" class="sub-metric-sub">평가 0원 · 실현 0원</div>
+          </div>
+          <div class="sub-metric">
+            <div class="sub-metric-label">누적 배당 수익</div>
+            <div id="krwDividendVal" class="sub-metric-val val-div">0원</div>
+            <div id="krwDividendSub" class="sub-metric-sub">배당세 0원</div>
+          </div>
+          <div class="sub-metric">
+            <div class="sub-metric-label">현재 보유 평가금액</div>
+            <div id="krwEvalVal" class="sub-metric-val">0원</div>
+            <div id="krwInvestedSub" class="sub-metric-sub">보유 매입원금 0원</div>
+          </div>
+          <div class="sub-metric">
+            <div class="sub-metric-label">납부 세금 · 수수료</div>
+            <div id="krwTaxFeeVal" class="sub-metric-val">0원</div>
+            <div id="krwTaxFeeSub" class="sub-metric-sub">배당세 + 거래세·수수료</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 미국주식 (USD) -->
+      <div class="currency-card">
+        <div class="currency-card-header">
+          <div class="currency-title">🇺🇸 미국주식 통합 수익 (달러 USD)</div>
+          <span id="usdStockCountTag" class="stock-count-tag">보유 0 · 매도완료 0</span>
+        </div>
+        <div class="hero-return-label" id="usdHeroLabel">매매 + 배당 합산 순수익 (세금 제외)</div>
+        <div class="hero-return-row">
+          <div id="usdTotalReturnVal" class="hero-return-amount">$0.00</div>
+          <span id="usdTotalReturnRate" class="hero-return-rate bg-zero">0.00%</span>
+        </div>
+        <div class="sub-metrics-grid">
+          <div class="sub-metric">
+            <div class="sub-metric-label">매매 손익 (평가 + 실현)</div>
+            <div id="usdCapitalPnlVal" class="sub-metric-val">$0.00</div>
+            <div id="usdCapitalPnlSub" class="sub-metric-sub">평가 $0.00 · 실현 $0.00</div>
+          </div>
+          <div class="sub-metric">
+            <div class="sub-metric-label">누적 배당 수익</div>
+            <div id="usdDividendVal" class="sub-metric-val val-div">$0.00</div>
+            <div id="usdDividendSub" class="sub-metric-sub">배당세 $0.00</div>
+          </div>
+          <div class="sub-metric">
+            <div class="sub-metric-label">현재 보유 평가금액</div>
+            <div id="usdEvalVal" class="sub-metric-val">$0.00</div>
+            <div id="usdInvestedSub" class="sub-metric-sub">보유 매입원금 $0.00</div>
+          </div>
+          <div class="sub-metric">
+            <div class="sub-metric-label">납부 세금 · 수수료</div>
+            <div id="usdTaxFeeVal" class="sub-metric-val">$0.00</div>
+            <div id="usdTaxFeeSub" class="sub-metric-sub">배당세 + 제비용·수수료</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 연도별 국내·미국 배당 성장 추이 그래프 섹션 -->
+    <section class="growth-section" id="dividendGrowthSection">
+      <div class="growth-section-header">
+        <div>
+          <div class="growth-heading-row">
+            <h2>📈 연도별 배당 성장 추이</h2>
+            <span id="growthTaxBasisBadge" class="badge badge-auto">세후 실수령 기준</span>
+          </div>
+          <p class="growth-subtitle">
+            막대에 마우스를 올리거나 클릭하면 해당 연도의 월평균 배당금과 전년 대비 성장액(YoY)을 자세히 볼 수 있습니다.
+          </p>
+        </div>
+
+        <div class="growth-header-actions">
+          <label id="growthIncludePriorStockWrap" class="growth-check-chip hidden" title="종목별로 연도 구분 없이 통입력한 타사 배당금을 이관 연도에 합산해 표시합니다.">
+            <input type="checkbox" id="growthIncludePriorStockChk" checked />
+            <span>종목별 통입력분(이관연도) 포함</span>
+          </label>
+          <button type="button" id="toggleCombinedKrwChartBtn" class="btn btn-div btn-sm">🇰🇷+🇺🇸 원화 합산 그래프 보기</button>
+          <button type="button" id="openYearlyModalFromChartBtn" class="btn btn-prior btn-sm">📅 2019~ 타사배당 입력</button>
+          <button type="button" id="toggleGrowthTableBtn" class="btn btn-outline btn-sm">표로 함께 보기</button>
+          <button type="button" id="toggleGrowthCollapseBtn" class="btn btn-secondary btn-sm">접기</button>
+        </div>
+      </div>
+
+      <div id="growthSectionBody">
+        <!-- 국내+미국 원화 합산 배당 성장 그래프 (토글 시 표시) -->
+        <div id="combinedKrwGrowthCard" class="growth-chart-card hidden" style="margin-bottom:16px;background:#f7fcf9;border-color:#bbf7d0;">
+          <div class="growth-card-top">
+            <div>
+              <div class="growth-card-title">🇰🇷+🇺🇸 국내 + 미국 통합 배당금 연도별 성장 (원화 KRW · 미국배당 입금당시 확정환율 기준)</div>
+              <div id="totalKrwGrowthMetaSub" class="growth-card-sub">국내 원화 배당 + 미국 배당 입금시점 원화 정산액 합산 추이</div>
+            </div>
+            <span id="totalKrwGrowthCagrBadge" class="badge badge-auto">-</span>
+          </div>
+          <div id="totalKrwGrowthSvgWrap" class="growth-svg-wrap"></div>
+          <div id="totalKrwGrowthInspector" class="growth-inspector-bar"></div>
+        </div>
+
+        <div class="growth-charts-grid">
+          <!-- 국내 배당 연도별 그래프 (KRW) -->
+          <div class="growth-chart-card">
+            <div class="growth-card-top">
+              <div>
+                <div class="growth-card-title">🇰🇷 국내 배당금 연도별 성장 (원화 KRW)</div>
+                <div id="krwGrowthMetaSub" class="growth-card-sub">연도별 배당 수령 추이</div>
+              </div>
+              <span id="krwGrowthCagrBadge" class="badge badge-auto">-</span>
+            </div>
+            <div id="krwGrowthSvgWrap" class="growth-svg-wrap"></div>
+            <div id="krwGrowthInspector" class="growth-inspector-bar"></div>
+          </div>
+
+          <!-- 미국 배당 연도별 그래프 (USD 또는 입금시점 KRW) -->
+          <div class="growth-chart-card">
+            <div class="growth-card-top">
+              <div>
+                <div id="usdGrowthCardTitle" class="growth-card-title">🇺🇸 미국 배당금 연도별 성장 (달러 USD)</div>
+                <div id="usdGrowthMetaSub" class="growth-card-sub">연도별 배당 수령 추이</div>
+              </div>
+              <span id="usdGrowthCagrBadge" class="badge badge-held">-</span>
+            </div>
+            <div id="usdGrowthSvgWrap" class="growth-svg-wrap"></div>
+            <div id="usdGrowthInspector" class="growth-inspector-bar"></div>
+          </div>
+        </div>
+
+        <div class="growth-legend-row">
+          <span class="growth-legend-item"><i class="legend-dot kr-bar"></i>국내 토스·실지급 배당</span>
+          <span class="growth-legend-item"><i class="legend-dot us-bar"></i>미국 토스·실지급 배당</span>
+          <span class="growth-legend-item"><i class="legend-dot prior-bar"></i>타사증권사 합산 배당(2019~)</span>
+          <span class="growth-legend-item"><i class="legend-line"></i>연간 배당 성장 추세선</span>
+        </div>
+
+        <!-- 선택 시 펼쳐지는 연도별 국내·미국 비교 수치표 -->
+        <div id="growthComparisonTableWrap" class="growth-table-wrap hidden">
+          <table class="history-table">
+            <thead>
+              <tr>
+                <th style="padding-left:16px;">연도</th>
+                <th>🇰🇷 국내 연간 배당금 (KRW)</th>
+                <th>국내 전년비 (YoY)</th>
+                <th>국내 월평균</th>
+                <th>🇺🇸 미국 연간 배당금 (USD)</th>
+                <th>미국 전년비 (YoY)</th>
+                <th style="padding-right:16px;">미국 월평균</th>
+              </tr>
+            </thead>
+            <tbody id="growthComparisonTbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 종목별 통합 수익 리스트 -->
+    <section class="table-section">
+      <div class="filter-bar">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <div class="segmented-group" id="statusFilterGroup">
+            <button type="button" class="seg-btn active" data-status="ALL">전체 (보유+매도완료)</button>
+            <button type="button" class="seg-btn" data-status="HELD">보유중</button>
+            <button type="button" class="seg-btn" data-status="SOLD">매도완료</button>
+            <button type="button" class="seg-btn" data-status="TRANSFER">타사입고 종목</button>
+          </div>
+
+          <div class="segmented-group" id="marketFilterGroup">
+            <button type="button" class="seg-btn active" data-market="ALL">전체 시장</button>
+            <button type="button" class="seg-btn" data-market="KR">국내 (KRW)</button>
+            <button type="button" class="seg-btn" data-market="US">미국 (USD)</button>
+          </div>
+        </div>
+
+        <div class="filter-controls-right">
+          <input type="search" id="stockSearchInput" class="search-input" placeholder="종목명 또는 티커 검색..." />
+          <select id="sortSelect" class="sort-select">
+            <option value="totalReturnDesc">합산 총수익 높은순</option>
+            <option value="dividendDesc">누적 배당금 많은순</option>
+            <option value="returnRateDesc">통합 수익률 높은순</option>
+            <option value="evalDesc">현재 평가금액 높은순</option>
+            <option value="nameAsc">종목명 가나다순</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="stock-table">
+          <thead>
+            <tr>
+              <th>종목 (클릭 시 상세 내역)</th>
+              <th>보유수량 · 평단가</th>
+              <th>현재 평가금액 · 현재가</th>
+              <th id="thCapitalPnl">매매 손익 (평가+실현)</th>
+              <th id="thDividend">누적 배당금</th>
+              <th id="thTotalReturn">합산 총수익 (매매+배당)</th>
+              <th>차감 세금</th>
+            </tr>
+          </thead>
+          <tbody id="stockTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- =====================================================================
+       4. 종목별 상세 슬라이드 드로어 (배당 내역 + 매수·매도 체결 내역 열람)
+       ===================================================================== -->
+  <div id="detailBackdrop" class="backdrop hidden">
+    <aside class="detail-drawer" id="detailDrawer">
+      <div class="drawer-header">
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap;">
+            <span id="detailMarketBadge" class="badge badge-held">국내 KRW</span>
+            <span id="detailStatusBadge" class="badge badge-held">보유중</span>
+            <span id="detailTransferBadge" class="badge badge-transfer hidden">타사대체입고</span>
+            <span id="detailSymbolText" style="font-size:13px;color:var(--text-muted);font-weight:600;"></span>
+          </div>
+          <h2 id="detailStockName" style="font-size:22px;font-weight:800;">종목명</h2>
+          <p id="detailPriceLine" style="font-size:13px;color:var(--text-secondary);margin-top:3px;"></p>
+        </div>
+        <button type="button" id="closeDetailBtn" class="btn btn-secondary btn-sm">✕ 닫기</button>
+      </div>
+
+      <div class="drawer-body">
+        <!-- 4대 핵심 수익 지표 -->
+        <div class="drawer-kpi-grid">
+          <div class="kpi-box">
+            <div class="kpi-box-label" id="detailTotalReturnLabel">합산 총수익 (세후)</div>
+            <div id="detailTotalReturnVal" class="kpi-box-val">0원</div>
+            <div id="detailTotalReturnRate" class="kpi-box-sub">수익률 0.00%</div>
+          </div>
+          <div class="kpi-box">
+            <div class="kpi-box-label">매매 손익 (평가+실현)</div>
+            <div id="detailCapitalVal" class="kpi-box-val">0원</div>
+            <div id="detailCapitalSub" class="kpi-box-sub">평가 0 · 실현 0</div>
+          </div>
+          <div class="kpi-box">
+            <div class="kpi-box-label">누적 배당 수익</div>
+            <div id="detailDividendVal" class="kpi-box-val val-div">0원</div>
+            <div id="detailDividendSub" class="kpi-box-sub">총 0회 수령</div>
+          </div>
+          <div class="kpi-box">
+            <div class="kpi-box-label">납부 세금 · 수수료</div>
+            <div id="detailTaxVal" class="kpi-box-val">0원</div>
+            <div id="detailTaxSub" class="kpi-box-sub">배당세 0 · 매매세 0</div>
+          </div>
+        </div>
+
+        <!-- 상세 탭 -->
+        <div class="drawer-tabs">
+          <button type="button" class="drawer-tab active" data-dtab="dividends" id="dtabBtnDividends">
+            배당받은 내역 (<span id="detailDivCount">0</span>)
+          </button>
+          <button type="button" class="drawer-tab" data-dtab="trades" id="dtabBtnTrades">
+            매수 · 매도 · 입고 내역 (<span id="detailTradeCount">0</span>)
+          </button>
+        </div>
+
+        <!-- 탭 1: 배당 내역 & 빠른 배당 기록 -->
+        <div id="dtabPanelDividends">
+          <div class="inline-form-card">
+            <div class="inline-form-title">
+              <span>+ 배당금 추가 · 타사증권사 배당 통입력</span>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button type="button" class="btn btn-prior btn-sm" id="openSinglePriorBtn" style="padding:3px 9px;font-size:11.5px;">🏦 이 종목 타사 배당 통입력</button>
+                <button type="button" class="btn btn-outline btn-sm" id="presetTaxDefaultBtn" style="padding:3px 8px;font-size:11.5px;">기본세율(15.4%/15%)</button>
+                <button type="button" class="btn btn-outline btn-sm" id="presetTaxZeroBtn" style="padding:3px 8px;font-size:11.5px;">비과세(0%)</button>
+              </div>
+            </div>
+            <form id="quickDividendForm">
+              <div class="form-grid-4">
+                <div>
+                  <label class="form-label" style="font-size:11.5px;">배당 지급일/기준일</label>
+                  <input type="date" id="qDivDate" class="form-input" style="padding:8px 10px;font-size:13.5px;" required />
+                </div>
+                <div>
+                  <label class="form-label" style="font-size:11.5px;">세전 배당금</label>
+                  <input type="number" step="any" id="qDivGross" class="form-input" style="padding:8px 10px;font-size:13.5px;" placeholder="세전 금액" required />
+                </div>
+                <div>
+                  <label class="form-label" style="font-size:11.5px;">배당 세금</label>
+                  <input type="number" step="any" id="qDivTax" class="form-input" style="padding:8px 10px;font-size:13.5px;" placeholder="세금" required />
+                </div>
+                <div>
+                  <label class="form-label" style="font-size:11.5px;">세후 실수령액 (역산 가능)</label>
+                  <input type="number" step="any" id="qDivNet" class="form-input" style="padding:8px 10px;font-size:13.5px;" placeholder="실수령액" />
+                </div>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <label style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;font-weight:600;color:var(--prior-purple);cursor:pointer;">
+                  <input type="checkbox" id="qDivIsPrior" />
+                  <span>타사증권사 이관 전 누적 배당(통입력)으로 저장</span>
+                </label>
+                <input type="text" id="qDivMemo" class="form-input" style="flex:1;min-width:180px;padding:8px 10px;font-size:13px;" placeholder="메모 (선택: 예 - 타 증권사 누적배당)" />
+                <button type="submit" class="btn btn-primary btn-sm" style="padding:9px 16px;">배당 기록</button>
+              </div>
+            </form>
+          </div>
+
+          <table class="history-table">
+            <thead>
+              <tr>
+                <th>지급일 · 구분</th>
+                <th>세전 배당금</th>
+                <th>배당소득세</th>
+                <th>세후 실수령액</th>
+                <th>관리</th>
+              </tr>
+            </thead>
+            <tbody id="detailDividendsTbody"></tbody>
+          </table>
+        </div>
+
+        <!-- 탭 2: 매수·매도 체결 내역 (100% 열람 전용 — 입력/수정/주문 기능 없음) -->
+        <div id="dtabPanelTrades" class="hidden">
+          <div class="security-callout" style="margin-bottom:12px;padding:10px 14px;font-size:12.5px;">
+            🛡️ <strong>100% 열람 전용 거래 원장:</strong> 거래내역서 PDF 확정 원장(타사대체입고는 입고일 단가 매수로 반영, 분할·병합은 원가 보존)과 기준일 이후 Open API 체결 내역만 표시합니다.
+          </div>
+
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+            <div class="segmented-group" id="detailTradeFilterGroup">
+              <button type="button" class="seg-btn active" data-tfilter="ALL">전체 (<span id="dtfCntAll">0</span>)</button>
+              <button type="button" class="seg-btn" data-tfilter="BUY">매수 (<span id="dtfCntBuy">0</span>)</button>
+              <button type="button" class="seg-btn" data-tfilter="SELL">매도 (<span id="dtfCntSell">0</span>)</button>
+              <button type="button" class="seg-btn" data-tfilter="INBOUND">입고 (<span id="dtfCntInbound">0</span>)</button>
+              <button type="button" class="seg-btn hidden" data-tfilter="CORP" id="dtfBtnCorp">분할·병합 (<span id="dtfCntCorp">0</span>)</button>
+            </div>
+            <div id="detailTradeFilterSummary" style="font-size:12.5px;color:var(--text-secondary);font-weight:600;"></div>
+          </div>
+
+          <table class="history-table">
+            <thead>
+              <tr>
+                <th>거래일 · 구분</th>
+                <th>수량 · 단가</th>
+                <th>거래금액</th>
+                <th>수수료 · 세금</th>
+                <th>매도 실현손익</th>
+              </tr>
+            </thead>
+            <tbody id="detailTradesTbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- =====================================================================
+       5. 타사증권사 이관 전 배당금 '통으로 입력' 전용 모달
+       ===================================================================== -->
+  <div id="priorBrokerModal" class="modal-backdrop hidden">
+    <div class="modal-card modal-wide">
+      <div class="modal-header">
+        <h3>🏦 타사증권사 수령 배당금 통입력</h3>
+        <button type="button" class="btn btn-secondary btn-sm" data-close-modal="priorBrokerModal">✕</button>
+      </div>
+
+      <div class="drawer-tabs" id="priorModalTabGroup" style="margin-bottom:16px;">
+        <button type="button" class="drawer-tab active" data-pmtab="byStock" id="pmTabBtnStock">
+          🏦 종목별 통입력 (종목 아는 경우)
+        </button>
+        <button type="button" class="drawer-tab" data-pmtab="byYear" id="pmTabBtnYear">
+          📅 연도별 통입력 (종목 상세 없는 증권사 · 2019년~)
+        </button>
+      </div>
+
+      <!-- 패널 A: 기존 종목별 통입력 그대로 유지 -->
+      <div id="priorPanelByStock">
+        <p style="font-size:13.5px;color:var(--text-secondary);margin-bottom:14px;">
+          토스증권으로 주식을 옮기기 전에 다른 증권사에서 받았던 배당금을 종목별 <strong>총액(통으로)</strong> 입력해 두면 종목별 수익에 영구 합산됩니다. 아래 표에는 PDF에서 확인된 <strong>타사대체입고 종목들</strong>이 자동으로 정리되어 있습니다.
+        </p>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:14px;background:var(--surface-subtle);padding:12px 14px;border-radius:12px;border:1px solid var(--border);">
+          <div style="font-size:13px;font-weight:700;color:var(--text-primary);">금액 입력 기준 선택:</div>
+          <select id="priorTaxCalcMode" class="form-select" style="width:auto;padding:7px 12px;font-size:13px;">
+            <option value="netOnly">세후 실수령 총액 입력 (세금 0원 처리 · 실수령 합계만 알 때 권장)</option>
+            <option value="netWithTax">세후 실수령 총액 입력 (국내 15.4% · 미국 15.0% 세전·세금 자동 역산)</option>
+            <option value="grossWithTax">세전 배당 총액 입력 (국내 15.4% · 미국 15.0% 세금 자동 차감)</option>
+          </select>
+        </div>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center;">
+          <select id="priorExtraStockSelect" class="form-select" style="flex:1;min-width:210px;padding:8px 12px;font-size:13.5px;">
+            <option value="">+ 대체입고 외 다른 종목 선택해서 추가...</option>
+          </select>
+          <button type="button" id="addExtraStockToPriorTableBtn" class="btn btn-outline btn-sm">표에 행 추가</button>
+        </div>
+
+        <div class="prior-table-wrap">
+          <table class="history-table">
+            <thead>
+              <tr>
+                <th style="padding-left:14px;">종목 (이관 내역)</th>
+                <th>통화</th>
+                <th>타사 누적 배당 총액 입력</th>
+                <th style="padding-right:14px;">메모 (선택)</th>
+              </tr>
+            </thead>
+            <tbody id="priorBrokerTableBody"></tbody>
+          </table>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+          <span style="font-size:12.5px;color:var(--text-muted);">※ 이미 입력된 종목을 0 또는 빈칸으로 비우고 저장하면 해당 타사 배당 항목이 삭제됩니다.</span>
+          <button type="button" id="savePriorBrokerBatchBtn" class="btn btn-primary">종목별 타사 배당 일괄 저장</button>
+        </div>
+      </div>
+
+      <!-- 패널 B: 종목 상세내역이 없는 증권사의 연도별(2019년~) 배당 통입력 -->
+      <div id="priorPanelByYear" class="hidden">
+        <p style="font-size:13.5px;color:var(--text-secondary);margin-bottom:14px;">
+          상세 종목 내역을 제공하지 않는 이전 증권사의 배당금을 <strong>2019년부터 연도별 합계</strong>로 통째로 입력할 수 있습니다. 국내 배당은 <strong>원화(KRW)</strong>로, 미국 배당은 <strong>달러(USD)</strong>로 각각 입력하시면 상단 통합 수익과 누적 배당에 자동 합산됩니다.
+        </p>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;background:var(--surface-subtle);padding:12px 14px;border-radius:12px;border:1px solid var(--border);">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span style="font-size:13px;font-weight:700;color:var(--text-primary);">금액 입력 기준:</span>
+            <select id="yearlyTaxCalcMode" class="form-select" style="width:auto;padding:7px 12px;font-size:13px;">
+              <option value="netOnly">세후 실수령 합계 입력 (세금 0원 처리 · 실수령액만 알 때 권장)</option>
+              <option value="netWithTax">세후 실수령 합계 입력 (국내 15.4% · 미국 15.0% 세전·세금 자동 역산)</option>
+              <option value="grossWithTax">세전 배당 합계 입력 (국내 15.4% · 미국 15.0% 세금 자동 차감)</option>
+              <option value="directGrossTax">세전 합계 + 세금 각각 직접 입력 (연간 원천징수 내역서 기준)</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <input type="text" id="yearlyDefaultBrokerMemo" class="form-input" style="width:190px;padding:7px 10px;font-size:12.5px;" placeholder="기본 증권사명 (예: 키움증권)" />
+            <button type="button" id="addEarlierYearRowBtn" class="btn btn-outline btn-sm">+ 이전 연도 추가</button>
+          </div>
+        </div>
+
+        <div class="prior-table-wrap">
+          <table class="history-table">
+            <thead>
+              <tr>
+                <th style="padding-left:14px;">연도</th>
+                <th id="thYearlyKrw">🇰🇷 국내 배당 합계 (원)</th>
+                <th id="thYearlyUsd">🇺🇸 미국 배당 합계 ($)</th>
+                <th style="padding-right:14px;">메모 (선택)</th>
+              </tr>
+            </thead>
+            <tbody id="yearlyPriorTableBody"></tbody>
+          </table>
+        </div>
+
+        <div id="yearlyLivePreviewBar" style="background:#f8f5ff;border:1px solid #ddd6fe;border-radius:12px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:var(--prior-purple);font-weight:700;"></div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+          <span style="font-size:12.5px;color:var(--text-muted);">※ 특정 연도의 원화·달러 칸을 빈칸 또는 0으로 두고 저장하면 해당 연도 기록이 삭제됩니다.</span>
+          <button type="button" id="saveYearlyPriorBatchBtn" class="btn btn-primary">연도별 배당 일괄 저장</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =====================================================================
+       6. 배당 수령 내역 단건 직접 추가 모달 (타사 이관 전 미보유 종목 포함 가능)
+       ===================================================================== -->
+  <div id="addRecordModal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>종목 배당 수령 내역 직접 추가</h3>
+        <button type="button" class="btn btn-secondary btn-sm" data-close-modal="addRecordModal">✕</button>
+      </div>
+      <p style="font-size:13.5px;color:var(--text-secondary);margin-bottom:16px;">
+        개별 배당금 또는 타사에서만 매매했던 종목의 배당 총액을 직접 추가합니다. (재동기화 시에도 영구 보존됩니다.)
+      </p>
+
+      <form id="globalRecordForm">
+        <div class="form-row-2">
+          <div class="form-group">
+            <label class="form-label">종목코드 / 티커</label>
+            <input type="text" id="gRecSymbol" class="form-input" placeholder="예: 005930 또는 SCHD" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">종목명</label>
+            <input type="text" id="gRecName" class="form-input" placeholder="예: 삼성전자 / 슈왑 배당 ETF" required />
+          </div>
+        </div>
+
+        <div class="form-row-2">
+          <div class="form-group">
+            <label class="form-label">시장 / 통화</label>
+            <select id="gRecMarket" class="form-select">
+              <option value="KR">🇰🇷 국내주식 (원화 KRW)</option>
+              <option value="US">🇺🇸 미국주식 (달러 USD)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">배당 지급일/기준일</label>
+            <input type="date" id="gRecDate" class="form-input" required />
+          </div>
+        </div>
+
+        <div class="form-row-2">
+          <div class="form-group">
+            <label class="form-label">세전 배당금</label>
+            <input type="number" step="any" id="gDivGross" class="form-input" placeholder="세전 총 배당금" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">배당소득세 (0 입력 가능)</label>
+            <input type="number" step="any" id="gDivTax" class="form-input" placeholder="원천징수 세액" value="0" required />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:700;color:var(--prior-purple);cursor:pointer;margin-bottom:8px;">
+            <input type="checkbox" id="gRecIsPrior" />
+            <span>타사증권사 이관 전 누적 배당(통입력)으로 분류</span>
+          </label>
+          <input type="text" id="gRecMemo" class="form-input" placeholder="메모 (선택: 예 - 타사증권사 누적 배당)" />
+        </div>
+
+        <button type="submit" id="btnSaveGlobalDiv" class="btn btn-primary btn-block">배당 기록 저장하기</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- =====================================================================
+       7. 원장 관리 · 일괄 붙여넣기 · JSON 백업 모달
+       ===================================================================== -->
+  <div id="bulkImportModal" class="modal-backdrop hidden">
+    <div class="modal-card modal-wide">
+      <div class="modal-header">
+        <h3>📄 토스증권 거래내역서 PDF 등록 · 원장 관리 · 백업</h3>
+        <button type="button" class="btn btn-secondary btn-sm" data-close-modal="bulkImportModal">✕</button>
+      </div>
+
+      <div class="pdf-guide-box">
+        <div class="pdf-guide-title">
+          <span>📌 토스증권에서 '거래내역서 PDF' 발급받아 올리는 방법</span>
+          <a href="https://support.toss.im/faq/3331" target="_blank" rel="noopener" style="font-size:12px;color:var(--toss-blue);text-decoration:none;font-weight:700;">토스 공식 증명서 안내 ↗</a>
+        </div>
+        <p style="margin-bottom:6px;">
+          토스증권 Open API는 최근 내역 위주로 제공되므로, 과거 전체 매수·매도 단가와 타사대체입고, 실제 입금된 배당금(입금환율·세금환급·재정산 포함)을 정확히 계산하려면 <strong>토스증권에서 거래내역서를 반드시 PDF 파일로 발급받아 업로드</strong>해야 합니다.
+        </p>
+        <ol class="pdf-guide-steps">
+          <li><strong>토스 앱</strong> 실행 → 하단 <strong>[증권]</strong> 탭 → 오른쪽 위 <strong>전체 메뉴(≡)</strong> 선택</li>
+          <li><strong>[설정] → [계좌] → [증명서 발급하기] → [거래내역서]</strong> 진입 <span style="color:var(--text-secondary);font-size:12px;">(또는 우측 상단 [고객센터] → [증명서 발급 필요해요] → [거래내역서])</span></li>
+          <li>거래종류 <strong>[전체]</strong>, 통화 <strong>[전체(원화+외화)]</strong>로 선택하고 조회 기간을 지정해 <strong>PDF 파일로 저장</strong> 후 PC로 전송 <span style="color:var(--text-secondary);font-size:12px;">(카카오톡 나에게 보내기 · 이메일 등)</span></li>
+        </ol>
+        <div style="font-size:12px;color:#1e40af;background:rgba(255,255,255,0.7);padding:8px 11px;border-radius:9px;margin-top:6px;">
+          💡 <strong>여러 개 파일 동시 업로드 OK:</strong> 거래 기간이 길어 1년 단위로 여러 개의 PDF로 나누어 발급받아도 한꺼번에 선택해 올리시면 됩니다. 기간이 일부 겹쳐도 발급번호 기준으로 중복 없이 자동 합산되며, 업로드한 PDF는 외부 전송 없이 내 PC(<code>pdfs/</code>)에만 보관됩니다.
+        </div>
+      </div>
+
+      <input type="file" id="pdfUploadInput" accept=".pdf,application/pdf" multiple class="hidden" />
+      <div id="pdfDropZone" class="pdf-dropzone" role="button" tabindex="0">
+        <div class="pdf-dropzone-title" id="pdfDropZoneTitle">📂 클릭하거나 토스증권 거래내역서 PDF 파일들을 여기에 끌어다 놓으세요</div>
+        <div class="pdf-dropzone-sub">Windows · Mac 모두 지원 · 여러 개의 PDF 동시 선택 가능 (업로드 즉시 원장에 자동 반영됩니다)</div>
+      </div>
+
+      <div class="security-callout" style="margin-bottom:18px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+          <div>
+            <strong id="pdfFolderCountLabel">📁 현재 등록된 거래내역서 PDF: 확인 중...</strong><br />
+            <span style="font-size:12px;">프로그램 폴더 안의 <code>pdfs/</code> 폴더에 직접 PDF 파일을 복사해 넣으신 경우에는 우측 <strong>PDF 폴더 재반영</strong> 버튼을 눌러주세요. (타사 배당·API 증분 내역은 그대로 유지됩니다.)</span>
+          </div>
+          <button type="button" id="reimportPdfFolderBtn" class="btn btn-outline btn-sm">↻ PDF 폴더 재반영</button>
+        </div>
+        <div id="pdfFileChipsWrap" class="pdf-file-chips"></div>
+      </div>
+
+      <details style="margin-top:6px;">
+        <summary style="cursor:pointer;font-size:13.5px;font-weight:800;color:var(--text-secondary);padding:6px 0;">
+          📝 텍스트로 배당 내역 일괄 붙여넣기 (엑셀·메모장 직접 입력용 펼치기)
+        </summary>
+        <div style="margin-top:10px;">
+          <p style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;">
+            엑셀이나 메모장에 정리한 배당 수령 내역을 아래 형식으로 붙여넣으면 한 번에 등록됩니다.
+          </p>
+          <div class="security-callout" style="font-family:monospace;font-size:12px;">
+            <strong>[배당 입력 형식]</strong> 배당, 지급일(YYYY-MM-DD), 종목코드, 종목명, 세전배당금, 세금<br />
+            예시: 배당, 2022-04-01, QYLD, 글로벌엑스나스닥커버드콜, 450.00, 67.50<br />
+            예시: 배당, 2022-05-01, 005930, 삼성전자, 144400, 22230
+          </div>
+          <textarea id="bulkPasteTextarea" class="form-textarea" rows="5" placeholder="여기에 배당 내역 줄을 붙여넣으세요..."></textarea>
+          <div style="display:flex;justify-content:flex-end;margin-top:10px;">
+            <button type="button" id="runBulkImportBtn" class="btn btn-primary btn-sm">배당 일괄 등록 실행</button>
+          </div>
+        </div>
+      </details>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:16px;padding-top:14px;border-top:1px solid var(--border);gap:10px;flex-wrap:wrap;">
+        <span style="font-size:12px;color:var(--text-muted);">🛡️ 모든 원장 데이터는 내 컴퓨터 내부(<code>data/portfolio.db</code>)에만 저장됩니다.</span>
+        <button type="button" id="exportJsonBtn" class="btn btn-outline btn-sm">⬇ 전체 열람 데이터 JSON 백업</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =====================================================================
+       8. PIN 번호 변경 모달
+       ===================================================================== -->
+  <div id="changePinModal" class="modal-backdrop hidden">
+    <div class="modal-card" style="max-width:420px;">
+      <div class="modal-header">
+        <h3>6자리 PIN 번호 변경</h3>
+        <button type="button" class="btn btn-secondary btn-sm" data-close-modal="changePinModal">✕</button>
+      </div>
+      <form id="changePinForm">
+        <div class="form-group">
+          <label class="form-label">현재 PIN (6자리)</label>
+          <input type="password" id="curPinInput" inputmode="numeric" maxlength="6" pattern="\d{6}" class="form-input" required />
+        </div>
+        <div class="form-group">
+          <label class="form-label">새 PIN (6자리)</label>
+          <input type="password" id="newPinInput" inputmode="numeric" maxlength="6" pattern="\d{6}" class="form-input" required />
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">PIN 변경 완료</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- =====================================================================
+       9. 토스 API 증분 동기화 · 이후 배당 갱신 상세 로그 모달
+       ===================================================================== -->
+  <div id="syncLogModal" class="modal-backdrop hidden">
+    <div class="modal-card modal-wide">
+      <div class="modal-header">
+        <h3>📜 동기화 · 이후 배당 갱신 상세 로그</h3>
+        <button type="button" class="btn btn-secondary btn-sm" data-close-modal="syncLogModal">✕</button>
+      </div>
+      <p style="font-size:13.5px;color:var(--text-secondary);margin-bottom:14px;">
+        <strong>토스 API 증분 동기화</strong>와 <strong>이후 배당 갱신</strong>을 실행할 때마다 새로 반영된 매수·매도 체결 내역과 자동 산출된 배당 종목·금액이 영구 기록됩니다. 종목명을 클릭하면 해당 종목 상세 화면으로 바로 이동합니다.
+      </p>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+        <div class="segmented-group" id="syncLogFilterGroup">
+          <button type="button" class="seg-btn active" data-logfilter="ALL">전체 이력</button>
+          <button type="button" class="seg-btn" data-logfilter="TOSS_SYNC">↻ 토스 API 동기화</button>
+          <button type="button" class="seg-btn" data-logfilter="DIV_SYNC">💸 이후 배당 갱신</button>
+          <button type="button" class="seg-btn" data-logfilter="PDF_IMPORT">📄 PDF 원장 반영</button>
+        </div>
+        <button type="button" id="clearAllSyncLogsBtn" class="btn btn-outline btn-sm" style="color:var(--up-red);">로그 비우기</button>
+      </div>
+
+      <div id="syncLogListWrap" class="sync-log-list"></div>
+    </div>
+  </div>
+
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
