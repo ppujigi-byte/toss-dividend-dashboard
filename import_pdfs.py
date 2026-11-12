@@ -10,11 +10,8 @@
 
 import datetime
 import json
-import os
 import re
 import sqlite3
-import subprocess
-import tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,8 +20,6 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 PDF_DIR = BASE_DIR / "pdfs"
 DB_PATH = DATA_DIR / "portfolio.db"
-SWIFT_SRC = BASE_DIR / "pdf_extractor.swift"
-SWIFT_BIN = DATA_DIR / "pdf_extractor_bin"
 
 # 주요 해외 주식·ETF ISIN -> 표준 티커 매핑 (병합 전후 ISIN 통합 지원)
 ISIN_TO_TICKER: Dict[str, str] = {
@@ -249,8 +244,9 @@ def resolve_missing_kr_dividend_codes(rows: List[Dict[str, Any]], kr_names: Dict
         pay_dt = datetime.date(y, m, d)
 
         if tx_type == "배당금입금":
-            # 개별 국내 주식 배당금 (NAVER A035420, KB금융 A105560, 신한지주 A055550, 삼성전자 A005930 등)
-            div_stocks = ["A035420", "A105560", "A055550", "A005930", "A086790", "A003410", "A012330", "A049720"]
+            # 개별 국내 주식 배당금 (주요 배당주 우선 탐색 후 보유 이력 종목 전체 확장)
+            preset_div_stocks = ["A035420", "A105560", "A055550", "A005930", "A086790", "A003410", "A012330", "A049720"]
+            div_stocks = preset_div_stocks + [c for c in sorted(kr_trades_by_code.keys()) if c not in preset_div_stocks]
             for idx in idx_list:
                 gross = int(round(fnum(rows[idx]["grossKrw"])))
                 matched_code = None
@@ -271,8 +267,14 @@ def resolve_missing_kr_dividend_codes(rows: List[Dict[str, Any]], kr_names: Dict
                     rows[idx]["stockName"] = kr_names.get(matched_code, matched_code)
             continue
 
-        # ETF 분배금: 지급일이 13일~25일 사이면 월중배당, 1~12일이면 월말배당
-        pool = mid_month_etfs if 13 <= d <= 25 else month_end_etfs
+        # ETF 분배금: 지급일이 13일~25일 사이면 월중배당, 1~12일이면 월말배당 (보유 국내 ETF 코드 자동 병합)
+        base_pool = mid_month_etfs if 13 <= d <= 25 else month_end_etfs
+        etf_brand_re = re.compile(r"ETF|KODEX|TIGER|RISE|ACE|PLUS|SOL|HANARO|KIWOOM|TIMEFOLIO|WON|1Q|KOACT", re.IGNORECASE)
+        extra_etfs = [
+            c for c in kr_trades_by_code.keys()
+            if c not in base_pool and etf_brand_re.search(kr_names.get(c, ""))
+        ]
+        pool = sorted(set(base_pool) | set(extra_etfs))
 
         # 각 후보 종목별 가능한 (보유수량, 주당분배금) 계산 (기준일은 지급일 1~12일 전)
         cand_per_item: List[List[Tuple[str, int, int]]] = []
