@@ -1561,3 +1561,68 @@ button, input, select, textarea {
   color: var(--up-red);
 }
 
+/* 개별 종목별 월별 배당금 그래프 전용 스타일 */
+.monthly-svg-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  justify-content: flex-start;
+  padding-bottom: 4px;
+}
+
+.monthly-svg-scroll svg {
+  display: block;
+}
+
+.monthly-bar-group {
+  cursor: pointer;
+}
+
+.monthly-bar-group .bar-hit {
+  fill: transparent;
+  transition: fill 0.14s ease;
+}
+
+.monthly-bar-group:hover .bar-hit,
+.monthly-bar-group.selected .bar-hit {
+  fill: rgba(49, 130, 246, 0.08);
+}
+
+.monthly-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.monthly-controls-right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-prior-toggle-off {
+  background: var(--surface);
+  color: var(--text-secondary);
+  border: 1.5px dashed #c4b5fd;
+}
+
+.btn-prior-toggle-off:hover:not(:disabled) {
+  background: #faf5ff;
+  color: var(--prior-purple);
+  border-color: #a78bfa;
+}
+
+.btn-prior-toggle-on {
+  background: var(--prior-purple-soft);
+  color: var(--prior-purple);
+  border: 1.5px solid #a78bfa;
+}
+
+.btn-prior-toggle-on:hover:not(:disabled) {
+  background: #ede9fe;
+}
+
+

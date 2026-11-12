@@ -11,6 +11,7 @@
   const LOCAL_ENCRYPTED_BACKUP_KEY = "toss_encrypted_vault_envelope";
   const TAX_PREF_STORAGE_KEY = "toss_exclude_tax_pref";
   const US_DIV_CUR_STORAGE_KEY = "toss_us_div_currency_pref";
+  const STOCK_MONTHLY_PRIOR_PREF_KEY = "toss_stock_monthly_show_prior";
   const PBKDF2_ITERATIONS = 600000;
 
   const state = {
@@ -42,6 +43,12 @@
     growthIncludeStockPrior: true,
     selectedGrowthYear: { KRW: null, USD: null, TOTAL_KRW: null },
     lastGrowthSeries: { KRW: [], USD: [], TOTAL_KRW: [] },
+    stockMonthlyShowPrior: localStorage.getItem(STOCK_MONTHLY_PRIOR_PREF_KEY) === "true",
+    stockMonthlyRange: "12M",
+    mainMonthlySymbol: null,
+    detailMonthlyCollapsed: false,
+    selectedMonthlyYm: { MAIN: null, DETAIL: null },
+    lastMonthlyBuilt: { MAIN: null, DETAIL: null },
     syncLogFilter: "ALL",
     syncLogs: [],
   };
@@ -1131,6 +1138,515 @@
         })
         .join("");
     }
+
+    renderMainStockMonthlyExplorer(items);
+  }
+
+  // =========================================================================
+  // 5-C. 개별 종목별 월별 배당금 추이 그래프 (타사 통입력 보이기 / 숨기기 지원)
+  // =========================================================================
+  function ymToIdx(ym) {
+    const parts = String(ym || "").split("-");
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    if (isNaN(y) || isNaN(m)) return 0;
+    return y * 12 + (m - 1);
+  }
+
+  function idxToYm(idx) {
+    const y = Math.floor(idx / 12);
+    const m = (idx % 12) + 1;
+    return `${y}-${String(m).padStart(2, "0")}`;
+  }
+
+  function getDividendEligibleStocks(items) {
+    const exTax = state.excludeTax;
+    const list = (items || []).filter(
+      (it) => !it.isPriorYearlyBucket && Array.isArray(it.dividends) && it.dividends.length > 0
+    );
+    const scoreKrw = (it) => {
+      const krwEq = exTax ? Number(it.dividendNetKrw) : Number(it.dividendGrossKrw);
+      if (krwEq && Math.abs(krwEq) > 0) return krwEq;
+      const native = Number(exTax ? it.dividendNet : it.dividendGross) || 0;
+      return it.currency === "KRW" ? native : native * 1380;
+    };
+    return list.sort((a, b) => {
+      if (a.status !== b.status) return a.status === "HELD" ? -1 : 1;
+      return scoreKrw(b) - scoreKrw(a);
+    });
+  }
+
+  function buildStockMonthlyDividendSeries(item, exTax, usInKrw, includePrior, rangeMode) {
+    const dispCur = item.currency === "USD" && usInKrw ? "KRW" : item.currency;
+    const bucketMap = new Map();
+    let allPriorTotal = 0;
+    let allPriorCount = 0;
+    let firstPriorYm = null;
+    let allRegTotal = 0;
+    let allRegCount = 0;
+
+    const ensureYm = (ym) => {
+      if (!bucketMap.has(ym)) {
+        bucketMap.set(ym, {
+          ym,
+          regVal: 0,
+          priorVal: 0,
+          origUsdReg: 0,
+          origUsdPrior: 0,
+          krwReg: 0,
+          krwPrior: 0,
+          regCount: 0,
+          priorCount: 0,
+        });
+      }
+      return bucketMap.get(ym);
+    };
+
+    (item.dividends || []).forEach((d) => {
+      const dt = String(d.pay_date || "");
+      if (!/^\d{4}-\d{2}/.test(dt)) return;
+      const ym = dt.slice(0, 7);
+      const isPrior = d.source === "PRIOR_BROKER" || d.source === "PRIOR_YEARLY";
+      const nativeVal = Number(exTax ? d.net_amount : d.gross_amount) || 0;
+      const krwVal = Number(exTax ? d.krw_net : d.krw_gross) || 0;
+      const dispVal = item.currency === "USD" && usInKrw ? krwVal : nativeVal;
+      const b = ensureYm(ym);
+
+      if (isPrior) {
+        b.priorVal += dispVal;
+        b.origUsdPrior += nativeVal;
+        b.krwPrior += krwVal;
+        b.priorCount += 1;
+        allPriorTotal += dispVal;
+        allPriorCount += 1;
+        if (!firstPriorYm || ym < firstPriorYm) firstPriorYm = ym;
+      } else {
+        b.regVal += dispVal;
+        b.origUsdReg += nativeVal;
+        b.krwReg += krwVal;
+        if ((Number(d.gross_amount) || 0) > 0) {
+          b.regCount += 1;
+          allRegCount += 1;
+        }
+        allRegTotal += dispVal;
+      }
+    });
+
+    const activeYms = Array.from(bucketMap.keys())
+      .filter((ym) => {
+        const b = bucketMap.get(ym);
+        const v = includePrior ? b.regVal + b.priorVal : b.regVal;
+        const c = includePrior ? b.regCount + b.priorCount : b.regCount;
+        return Math.abs(v) > 0.0001 || c > 0;
+      })
+      .sort();
+
+    if (activeYms.length === 0) {
+      return {
+        item,
+        dispCur,
+        series: [],
+        hasPrior: allPriorCount > 0,
+        allPriorTotal,
+        allPriorCount,
+        firstPriorYm,
+        allRegCount,
+        onlyPriorHidden: !includePrior && allPriorCount > 0,
+      };
+    }
+
+    const firstIdx = ymToIdx(activeYms[0]);
+    const endIdx = ymToIdx(activeYms[activeYms.length - 1]);
+    let startIdx = firstIdx;
+    if (rangeMode === "12M") startIdx = Math.max(firstIdx, endIdx - 11);
+    else if (rangeMode === "24M") startIdx = Math.max(firstIdx, endIdx - 23);
+
+    const series = [];
+    let prevPayoutRow = null;
+    for (let idx = startIdx; idx <= endIdx; idx++) {
+      const ym = idxToYm(idx);
+      const [yrNum, moNum] = ym.split("-").map(Number);
+      const b = bucketMap.get(ym) || {
+        regVal: 0,
+        priorVal: 0,
+        origUsdReg: 0,
+        origUsdPrior: 0,
+        krwReg: 0,
+        krwPrior: 0,
+        regCount: 0,
+        priorCount: 0,
+      };
+      const totalVal = includePrior ? b.regVal + b.priorVal : b.regVal;
+      const origUsdVal = includePrior ? b.origUsdReg + b.origUsdPrior : b.origUsdReg;
+      const krwEquivVal = includePrior ? b.krwReg + b.krwPrior : b.krwReg;
+      const count = b.regCount + (includePrior ? b.priorCount : 0);
+
+      let prevDiff = null;
+      let prevPct = null;
+      let prevYm = null;
+      if (Math.abs(totalVal) > 0.0001 && prevPayoutRow) {
+        prevYm = prevPayoutRow.ym;
+        prevDiff = totalVal - prevPayoutRow.totalVal;
+        if (prevPayoutRow.totalVal > 0.0001) {
+          prevPct = (prevDiff / prevPayoutRow.totalVal) * 100;
+        }
+      }
+
+      const row = {
+        ym,
+        year: yrNum,
+        month: moNum,
+        regVal: b.regVal,
+        priorVal: includePrior ? b.priorVal : 0,
+        totalVal,
+        origUsdVal,
+        krwEquivVal,
+        count,
+        regCount: b.regCount,
+        priorCount: includePrior ? b.priorCount : 0,
+        prevYm,
+        prevDiff,
+        prevPct,
+      };
+      if (totalVal > 0.0001) prevPayoutRow = row;
+      series.push(row);
+    }
+
+    return {
+      item,
+      dispCur,
+      series,
+      hasPrior: allPriorCount > 0,
+      allPriorTotal,
+      allPriorCount,
+      firstPriorYm,
+      allRegCount,
+      onlyPriorHidden: false,
+    };
+  }
+
+  function renderMainStockMonthlyExplorer(items) {
+    const card = $("stockMonthlyExplorerCard");
+    const sel = $("mainMonthlyStockSelect");
+    const badge = $("mainMonthlyStockBadge");
+    if (!card || !sel) return;
+
+    const eligible = getDividendEligibleStocks(items);
+    if (eligible.length === 0) {
+      sel.innerHTML = `<option value="">배당 수령 종목 없음</option>`;
+      if (badge) {
+        badge.textContent = "데이터 없음";
+        badge.className = "badge badge-sold";
+      }
+      $("mainMonthlyMetaSub").textContent = "배당 기록이 등록되면 종목별 월별 배당금 추이 그래프가 표시됩니다.";
+      $("mainMonthlySvgWrap").innerHTML = `<div class="empty-state" style="padding:34px 12px;font-size:13px;">배당 수령 내역이 있는 종목이 아직 없습니다.</div>`;
+      $("mainMonthlyInspector").textContent = "거래내역서 PDF 업로드 또는 배당 입력 후 월별 추이를 확인할 수 있습니다.";
+      return;
+    }
+
+    if (!state.mainMonthlySymbol || !eligible.some((x) => x.symbol === state.mainMonthlySymbol)) {
+      state.mainMonthlySymbol = eligible[0].symbol;
+    }
+
+    const heldGroup = eligible.filter((x) => x.status === "HELD");
+    const soldGroup = eligible.filter((x) => x.status !== "HELD");
+    const renderOpt = (it) => {
+      const mktIcon = it.market === "KR" ? "🇰🇷" : "🇺🇸";
+      const dispCur = it.currency === "USD" && state.usDivInKrw ? "KRW" : it.currency;
+      const amt = it.currency === "USD" && state.usDivInKrw
+        ? (state.excludeTax ? it.dividendNetKrw : it.dividendGrossKrw)
+        : (state.excludeTax ? it.dividendNet : it.dividendGross);
+      const priorMark = it.priorBrokerDiv ? " · 타사통입력" : "";
+      const selAttr = it.symbol === state.mainMonthlySymbol ? "selected" : "";
+      return `<option value="${escapeHtml(it.symbol)}" ${selAttr}>${mktIcon} ${escapeHtml(it.name)} (${escapeHtml(it.symbol)}) · ${escapeHtml(formatCompactChartAmount(amt, dispCur))}${priorMark}</option>`;
+    };
+
+    let optHtml = "";
+    if (heldGroup.length > 0) {
+      optHtml += `<optgroup label="보유 중인 배당 종목 (${heldGroup.length})">${heldGroup.map(renderOpt).join("")}</optgroup>`;
+    }
+    if (soldGroup.length > 0) {
+      optHtml += `<optgroup label="매도 완료 배당 종목 (${soldGroup.length})">${soldGroup.map(renderOpt).join("")}</optgroup>`;
+    }
+    sel.innerHTML = optHtml;
+
+    const targetItem = eligible.find((x) => x.symbol === state.mainMonthlySymbol) || eligible[0];
+    if (badge) {
+      badge.textContent = targetItem.status === "HELD" ? `보유중 · ${targetItem.symbol}` : `매도완료 · ${targetItem.symbol}`;
+      badge.className = `badge ${targetItem.status === "HELD" ? "badge-held" : "badge-sold"}`;
+    }
+    renderStockMonthlyChartSlot("MAIN", targetItem);
+  }
+
+  function syncMonthlyControlsUi(slotKey, built) {
+    const isMain = slotKey === "MAIN";
+    const priorBtn = $(isMain ? "mainToggleStockPriorBtn" : "detailToggleStockPriorBtn");
+    const rangeGrp = $(isMain ? "mainMonthlyRangeGroup" : "detailMonthlyRangeGroup");
+
+    if (priorBtn) {
+      const on = state.stockMonthlyShowPrior;
+      priorBtn.classList.toggle("btn-prior-toggle-on", on);
+      priorBtn.classList.toggle("btn-prior-toggle-off", !on);
+      if (built.hasPrior) {
+        const amtTxt = formatCompactChartAmount(built.allPriorTotal, built.dispCur);
+        priorBtn.textContent = on
+          ? `🏦 타사 통입력: 표시 중 (${amtTxt})`
+          : `🏦 타사 통입력 보이기 (+${amtTxt} 숨김)`;
+      } else {
+        priorBtn.textContent = on ? "🏦 타사 통입력: 표시" : "🏦 타사 통입력: 숨김";
+      }
+    }
+
+    if (rangeGrp) {
+      rangeGrp.querySelectorAll(".seg-btn").forEach((b) => {
+        b.classList.toggle("active", b.dataset.mrange === state.stockMonthlyRange);
+      });
+    }
+  }
+
+  function renderStockMonthlyChartSlot(slotKey, item) {
+    const isMain = slotKey === "MAIN";
+    const svgWrap = $(isMain ? "mainMonthlySvgWrap" : "detailMonthlySvgWrap");
+    const metaSub = $(isMain ? "mainMonthlyMetaSub" : "detailMonthlyMetaSub");
+    const inspector = $(isMain ? "mainMonthlyInspector" : "detailMonthlyInspector");
+    if (!svgWrap || !metaSub || !inspector || !item) return;
+
+    const built = buildStockMonthlyDividendSeries(
+      item,
+      state.excludeTax,
+      state.usDivInKrw,
+      state.stockMonthlyShowPrior,
+      state.stockMonthlyRange
+    );
+    state.lastMonthlyBuilt[slotKey] = built;
+    syncMonthlyControlsUi(slotKey, built);
+
+    const { series, dispCur } = built;
+    if (built.onlyPriorHidden) {
+      metaSub.textContent = `타사 통입력 배당(${formatMoney(built.allPriorTotal, dispCur)})만 등록된 종목입니다.`;
+      svgWrap.innerHTML = `
+        <div class="empty-state" style="width:100%;padding:28px 14px;font-size:13px;">
+          <div style="margin-bottom:10px;color:var(--text-secondary);">
+            이 종목은 한 번에 합산 입력한 <strong>타사 통입력 배당(${formatMoney(built.allPriorTotal, dispCur)})</strong>만 있어 현재 월별 그래프에서 숨겨져 있습니다.
+          </div>
+          <button type="button" class="btn btn-prior btn-sm" data-enable-monthly-prior="1">🏦 타사 통입력 보이기 켜기</button>
+        </div>
+      `;
+      inspector.textContent = "상단 '타사 통입력 보이기' 버튼을 누르면 이관 기준월 막대가 표시됩니다.";
+      return;
+    }
+
+    if (!series || series.length === 0) {
+      metaSub.textContent = "집계된 월별 배당 내역 없음";
+      svgWrap.innerHTML = `<div class="empty-state" style="width:100%;padding:28px 14px;font-size:13px;">이 종목의 배당 수령 기록이 아직 없습니다.</div>`;
+      inspector.textContent = "배당 내역이 추가되면 월별 배당금 막대그래프가 자동으로 생성됩니다.";
+      return;
+    }
+
+    const payoutMonths = series.filter((r) => r.totalVal > 0.0001);
+    const sumPeriod = series.reduce((acc, r) => acc + r.totalVal, 0);
+    const avgPerPayoutMonth = payoutMonths.length > 0 ? sumPeriod / payoutMonths.length : 0;
+    const peakRow = series.reduce((best, r) => (r.totalVal > best.totalVal ? r : best), series[0]);
+    const startLabel = series[0].ym.replace("-", ".");
+    const endLabel = series[series.length - 1].ym.replace("-", ".");
+    const hiddenNote =
+      !state.stockMonthlyShowPrior && built.hasPrior
+        ? ` · 타사통입력 ${formatMoney(built.allPriorTotal, dispCur)} 제외됨`
+        : state.stockMonthlyShowPrior && built.hasPrior
+        ? ` · 타사통입력 포함`
+        : "";
+    metaSub.textContent = `${startLabel}~${endLabel} 합계 ${formatMoney(sumPeriod, dispCur)} · 지급월 평균 ${formatMoney(avgPerPayoutMonth, dispCur)} (${payoutMonths.length}개 지급월) · 최고 ${peakRow.ym.replace("-", ".")} (${formatMoney(peakRow.totalVal, dispCur)})${hiddenNote}`;
+
+    if (!state.selectedMonthlyYm[slotKey] || !series.some((s) => s.ym === state.selectedMonthlyYm[slotKey])) {
+      const lastPos = [...series].reverse().find((s) => s.totalVal > 0.0001) || series[series.length - 1];
+      state.selectedMonthlyYm[slotKey] = lastPos.ym;
+    }
+    const selYm = state.selectedMonthlyYm[slotKey];
+
+    const n = series.length;
+    const baseW = isMain ? 920 : 660;
+    const pitch = isMain ? 20 : 17;
+    const W = Math.max(baseW, n * pitch + 32);
+    const H = isMain ? 216 : 196;
+    const padL = 14;
+    const padR = 14;
+    const padTop = 34;
+    const padBot = 34;
+    const plotW = W - padL - padR;
+    const plotH = H - padTop - padBot;
+    const baseY = padTop + plotH;
+
+    const maxVal = Math.max(...series.map((s) => Math.max(0, s.totalVal)), 1);
+    const slotW = plotW / n;
+    const barW = Math.min(38, Math.max(7, slotW * 0.62));
+    const mainColor = item.market === "KR" ? "#00a86b" : "#3182f6";
+    const priorColor = "#8b5cf6";
+
+    const gridLines = [0, 0.5, 1]
+      .map((ratio) => {
+        const gy = baseY - plotH * ratio;
+        return `<line x1="${padL}" y1="${gy.toFixed(1)}" x2="${W - padR}" y2="${gy.toFixed(1)}" stroke="#e5e8eb" stroke-width="1" ${ratio > 0 ? 'stroke-dasharray="3 3"' : ""} />`;
+      })
+      .join("");
+
+    let avgLineHtml = "";
+    if (payoutMonths.length >= 2 && avgPerPayoutMonth > 0) {
+      const avgY = baseY - Math.min(plotH, (avgPerPayoutMonth / maxVal) * plotH);
+      avgLineHtml = `
+        <line x1="${padL}" y1="${avgY.toFixed(1)}" x2="${W - padR}" y2="${avgY.toFixed(1)}" stroke="#0f766e" stroke-width="1.3" stroke-dasharray="4 3" opacity="0.65" pointer-events="none" />
+        <text x="${W - padR - 2}" y="${Math.max(12, avgY - 4).toFixed(1)}" text-anchor="end" font-size="10" font-weight="700" fill="#0f766e" opacity="0.85" pointer-events="none">평균 ${escapeHtml(formatCompactChartAmount(avgPerPayoutMonth, dispCur))}</text>
+      `;
+    }
+
+    const labelStep = n <= 14 ? 1 : n <= 26 ? 2 : n <= 42 ? 3 : 6;
+    const barGroups = series
+      .map((row, idx) => {
+        const cx = padL + slotW * idx + slotW / 2;
+        const bx = cx - barW / 2;
+        const posTotal = Math.max(0, row.totalVal);
+        const totH = posTotal > 0 ? Math.max(3, (posTotal / maxVal) * plotH) : 0;
+        const topY = baseY - totH;
+        const isSel = row.ym === selYm;
+        const isPeak = row.ym === peakRow.ym && posTotal > 0;
+
+        const yearGuide =
+          idx > 0 && row.month === 1
+            ? `<line x1="${(padL + slotW * idx).toFixed(1)}" y1="${padTop - 8}" x2="${(padL + slotW * idx).toFixed(1)}" y2="${baseY}" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="2 3" pointer-events="none" />`
+            : "";
+
+        let rectsHtml = "";
+        if (totH > 0) {
+          const regPos = Math.max(0, row.regVal);
+          const priPos = Math.max(0, row.priorVal);
+          const sumPos = regPos + priPos;
+          const regH = sumPos > 0 ? totH * (regPos / sumPos) : 0;
+          const priH = Math.max(0, totH - regH);
+          const rx = Math.min(5, barW / 2);
+          if (priH > 0.5 && regH > 0.5) {
+            rectsHtml = `
+              <rect x="${bx.toFixed(1)}" y="${(baseY - regH).toFixed(1)}" width="${barW.toFixed(1)}" height="${regH.toFixed(1)}" rx="${rx.toFixed(1)}" fill="${mainColor}" opacity="0.94" />
+              <rect x="${bx.toFixed(1)}" y="${topY.toFixed(1)}" width="${barW.toFixed(1)}" height="${priH.toFixed(1)}" rx="${rx.toFixed(1)}" fill="${priorColor}" opacity="0.93" />
+            `;
+          } else {
+            const col = priH > regH ? priorColor : mainColor;
+            rectsHtml = `<rect x="${bx.toFixed(1)}" y="${topY.toFixed(1)}" width="${barW.toFixed(1)}" height="${totH.toFixed(1)}" rx="${rx.toFixed(1)}" fill="${col}" opacity="${isSel ? "1" : "0.9"}" />`;
+          }
+        } else if (row.totalVal < -0.0001) {
+          rectsHtml = `<rect x="${bx.toFixed(1)}" y="${(baseY - 3).toFixed(1)}" width="${barW.toFixed(1)}" height="3" rx="1.5" fill="#94a3b8" />`;
+        }
+
+        const showValText = posTotal > 0 && (n <= 15 || isSel || isPeak);
+        const valLabelHtml = showValText
+          ? `<text data-mval-label="1" x="${cx.toFixed(1)}" y="${(topY - 6).toFixed(1)}" text-anchor="middle" font-size="${n <= 15 ? "10.5" : "11"}" font-weight="800" fill="${isSel ? "#191f28" : "#4e5968"}">${escapeHtml(formatCompactChartAmount(row.totalVal, dispCur))}</text>`
+          : "";
+
+        const showXTick = row.month === 1 || idx === 0 || idx === n - 1 || idx % labelStep === 0;
+        const xTxt =
+          row.month === 1 || idx === 0
+            ? `${String(row.year).slice(2)}.${String(row.month).padStart(2, "0")}`
+            : `${row.month}월`;
+        const xTickHtml = showXTick
+          ? `<text x="${cx.toFixed(1)}" y="${baseY + 16}" text-anchor="middle" font-size="10.5" font-weight="${row.month === 1 || isSel ? "800" : "600"}" fill="${isSel ? "#191f28" : row.month === 1 ? "#334155" : "#6b7684"}">${escapeHtml(xTxt)}</text>`
+          : "";
+
+        return `
+          ${yearGuide}
+          <g class="monthly-bar-group ${isSel ? "selected" : ""}" data-monthly-slot="${slotKey}" data-monthly-ym="${row.ym}">
+            <rect class="bar-hit" x="${(padL + slotW * idx + 1).toFixed(1)}" y="4" width="${Math.max(6, slotW - 2).toFixed(1)}" height="${H - 8}" rx="6" />
+            ${rectsHtml}
+            ${valLabelHtml}
+            ${xTickHtml}
+          </g>
+        `;
+      })
+      .join("");
+
+    const svgStyle = W > baseW ? `style="min-width:${W}px;width:${W}px;height:auto;"` : `style="width:100%;height:auto;"`;
+    svgWrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" ${svgStyle} role="img" aria-label="${escapeHtml(item.name)} 월별 배당금 그래프">${gridLines}${avgLineHtml}${barGroups}</svg>`;
+    if (W > baseW) {
+      requestAnimationFrame(() => {
+        svgWrap.scrollLeft = svgWrap.scrollWidth;
+      });
+    }
+    renderMonthlyInspector(slotKey, selYm);
+  }
+
+  function renderMonthlyInspector(slotKey, ym) {
+    const isMain = slotKey === "MAIN";
+    const el = $(isMain ? "mainMonthlyInspector" : "detailMonthlyInspector");
+    const built = state.lastMonthlyBuilt[slotKey];
+    if (!el || !built || !built.series.length) return;
+
+    const row = built.series.find((s) => s.ym === ym) || built.series[built.series.length - 1];
+    const { item, dispCur } = built;
+
+    let subCurrencyHtml = "";
+    if (item.currency === "USD") {
+      if (state.usDivInKrw && Math.abs(row.origUsdVal) > 0.0001) {
+        subCurrencyHtml += ` <span style="color:var(--text-secondary);">(원래 ${formatMoney(row.origUsdVal, "USD")})</span>`;
+      } else if (!state.usDivInKrw && Math.abs(row.krwEquivVal) >= 1) {
+        subCurrencyHtml += ` <span style="color:var(--text-secondary);">(입금원화 ${formatMoney(row.krwEquivVal, "KRW")})</span>`;
+      }
+    }
+    if (row.priorVal > 0.0001) {
+      subCurrencyHtml += ` <span style="color:var(--prior-purple);">(정기 ${formatMoney(row.regVal, dispCur)} + 타사통입력 ${formatMoney(row.priorVal, dispCur)})</span>`;
+    }
+
+    let diffHtml = `<span style="color:var(--text-muted);">비교 기준 첫 지급월</span>`;
+    if (Math.abs(row.totalVal) <= 0.0001) {
+      diffHtml = `<span style="color:var(--text-muted);">해당 월 배당 지급 없음</span>`;
+    } else if (row.prevDiff !== null) {
+      const cls = pnlClass(row.prevDiff);
+      const pctStr = row.prevPct !== null ? ` (${row.prevPct >= 0 ? "+" : ""}${row.prevPct.toFixed(1)}%)` : "";
+      const prevLabel = row.prevYm ? `${row.prevYm.slice(2).replace("-", ".")} 대비` : "직전 대비";
+      diffHtml = `${escapeHtml(prevLabel)} <strong class="${cls}">${formatMoney(row.prevDiff, dispCur, true)}${escapeHtml(pctStr)}</strong>`;
+    }
+
+    el.innerHTML = `
+      <div>
+        <strong style="color:var(--text-primary);">${row.year}년 ${row.month}월:</strong>
+        <strong class="${row.totalVal > 0 ? "val-div" : pnlClass(row.totalVal)}" style="margin-left:4px;">${formatMoney(row.totalVal, dispCur)}</strong>${subCurrencyHtml}
+      </div>
+      <div>
+        ${row.count > 0 ? `수령 <strong>${row.count}건</strong> · ` : ""}${diffHtml}
+      </div>
+    `;
+  }
+
+  function toggleStockMonthlyPrior(preferSlot = "DETAIL") {
+    state.stockMonthlyShowPrior = !state.stockMonthlyShowPrior;
+    localStorage.setItem(STOCK_MONTHLY_PRIOR_PREF_KEY, String(state.stockMonthlyShowPrior));
+
+    if (state.stockMonthlyShowPrior) {
+      const refBuilt = state.lastMonthlyBuilt[preferSlot] || state.lastMonthlyBuilt.MAIN;
+      if (refBuilt && refBuilt.hasPrior && refBuilt.firstPriorYm) {
+        const curSeries = refBuilt.series || [];
+        const inCurrentWindow = curSeries.some((s) => s.ym === refBuilt.firstPriorYm);
+        if (!inCurrentWindow && state.stockMonthlyRange !== "ALL") {
+          state.stockMonthlyRange = "ALL";
+          showToast("타사 통입력 배당이 과거 연월에 있어 전체 기간으로 자동 전환했습니다.");
+        }
+        state.selectedMonthlyYm[preferSlot] = refBuilt.firstPriorYm;
+      }
+    }
+
+    if (state.portfolio) {
+      renderMainStockMonthlyExplorer(state.portfolio.items);
+      if (state.activeDetailSymbol) {
+        renderDetailDrawer(state.activeDetailSymbol);
+      }
+    }
+  }
+
+  function setStockMonthlyRange(newRange) {
+    if (!newRange || state.stockMonthlyRange === newRange) return;
+    state.stockMonthlyRange = newRange;
+    if (state.portfolio) {
+      renderMainStockMonthlyExplorer(state.portfolio.items);
+      if (state.activeDetailSymbol) {
+        renderDetailDrawer(state.activeDetailSymbol);
+      }
+    }
   }
 
   function renderStockTable(items, exTax) {
@@ -1317,8 +1833,14 @@
   function openDetailDrawer(symbol) {
     if (state.activeDetailSymbol !== symbol) {
       state.detailTradeFilter = "ALL";
+      state.selectedMonthlyYm.DETAIL = null;
     }
     state.activeDetailSymbol = symbol;
+    const found = (state.portfolio?.items || []).find((x) => x.symbol === symbol);
+    if (found && !found.isPriorYearlyBucket && Array.isArray(found.dividends) && found.dividends.length > 0) {
+      state.mainMonthlySymbol = symbol;
+      renderMainStockMonthlyExplorer(state.portfolio.items);
+    }
     $("detailBackdrop").classList.remove("hidden");
     const today = new Date().toISOString().slice(0, 10);
     if (!$("qDivDate").value) $("qDivDate").value = today;
@@ -1439,6 +1961,23 @@
     $("detailDivCount").textContent = String(item.dividends.length);
     $("detailTradeCount").textContent = String(item.trades.length);
 
+    const detailMCard = $("detailMonthlyDivCard");
+    if (detailMCard) {
+      detailMCard.classList.toggle("hidden", isYearlyBucket);
+      if (!isYearlyBucket) {
+        const basisBadge = $("detailMonthlyBasisBadge");
+        if (basisBadge) {
+          const curHint = showDetailDivInKrw ? " · 원화환산" : "";
+          basisBadge.textContent = `${exTax ? "세후 실수령" : "세전 총액"}${curHint}`;
+          basisBadge.className = `badge ${exTax ? "badge-auto" : "badge-transfer"}`;
+        }
+        $("detailMonthlyBody")?.classList.toggle("hidden", state.detailMonthlyCollapsed);
+        const colBtn = $("toggleDetailMonthlyCollapseBtn");
+        if (colBtn) colBtn.textContent = state.detailMonthlyCollapsed ? "펼치기" : "접기";
+        renderStockMonthlyChartSlot("DETAIL", item);
+      }
+    }
+
     const divTbody = $("detailDividendsTbody");
     if (item.dividends.length === 0) {
       divTbody.innerHTML = `<tr><td colspan="5" class="empty-state" style="padding:28px;">지급된 배당 이력이 없습니다. 타사증권사에서 받은 배당이 있다면 상단 '이 종목 타사 배당 통입력'을 눌러 추가해주세요.</td></tr>`;
@@ -1453,6 +1992,10 @@
           const ktx = Number(d.krw_tax) || 0;
           const knt = Number(d.krw_net) || 0;
           const fxR = Number(d.fx_rate) || 0;
+          const priorChartHint =
+            d.source === "PRIOR_BROKER" && !state.stockMonthlyShowPrior
+              ? `<span style="font-size:10.5px;color:var(--prior-purple);opacity:0.82;">(월별그래프 숨김 중)</span>`
+              : "";
 
           const fxTagHtml =
             cur === "USD" && fxR > 1
@@ -1502,6 +2045,7 @@
                 <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
                   <span style="font-weight:700;">${escapeHtml(d.pay_date)}</span>
                   <span class="badge ${bInfo.cls}" style="font-size:10.5px;">${bInfo.label}</span>
+                  ${priorChartHint}
                   ${fxTagHtml}
                 </div>
                 <div class="cell-sub">${escapeHtml(d.memo || "배당금 입금")}</div>
@@ -2401,6 +2945,70 @@
     $("usdGrowthSvgWrap").addEventListener("click", handleGrowthBarInteract);
     $("totalKrwGrowthSvgWrap").addEventListener("mouseover", handleGrowthBarInteract);
     $("totalKrwGrowthSvgWrap").addEventListener("click", handleGrowthBarInteract);
+
+    // 개별 종목별 월별 배당금 그래프 이벤트
+    $("mainMonthlyStockSelect")?.addEventListener("change", (e) => {
+      state.mainMonthlySymbol = e.target.value;
+      state.selectedMonthlyYm.MAIN = null;
+      if (state.portfolio) renderMainStockMonthlyExplorer(state.portfolio.items);
+    });
+    const stepMainMonthlyStock = (delta) => {
+      if (!state.portfolio) return;
+      const eligible = getDividendEligibleStocks(state.portfolio.items);
+      if (eligible.length === 0) return;
+      const curIdx = eligible.findIndex((x) => x.symbol === state.mainMonthlySymbol);
+      const nextIdx = ((curIdx >= 0 ? curIdx : 0) + delta + eligible.length) % eligible.length;
+      state.mainMonthlySymbol = eligible[nextIdx].symbol;
+      state.selectedMonthlyYm.MAIN = null;
+      renderMainStockMonthlyExplorer(state.portfolio.items);
+    };
+    $("prevMonthlyStockBtn")?.addEventListener("click", () => stepMainMonthlyStock(-1));
+    $("nextMonthlyStockBtn")?.addEventListener("click", () => stepMainMonthlyStock(1));
+    $("openSelectedMonthlyDetailBtn")?.addEventListener("click", () => {
+      if (state.mainMonthlySymbol) openDetailDrawer(state.mainMonthlySymbol);
+    });
+    $("mainToggleStockPriorBtn")?.addEventListener("click", () => toggleStockMonthlyPrior("MAIN"));
+    $("detailToggleStockPriorBtn")?.addEventListener("click", () => toggleStockMonthlyPrior("DETAIL"));
+
+    const handleMonthlyRangeClick = (e) => {
+      const btn = e.target.closest(".seg-btn");
+      if (!btn || !btn.dataset.mrange) return;
+      setStockMonthlyRange(btn.dataset.mrange);
+    };
+    $("mainMonthlyRangeGroup")?.addEventListener("click", handleMonthlyRangeClick);
+    $("detailMonthlyRangeGroup")?.addEventListener("click", handleMonthlyRangeClick);
+
+    $("toggleDetailMonthlyCollapseBtn")?.addEventListener("click", () => {
+      state.detailMonthlyCollapsed = !state.detailMonthlyCollapsed;
+      $("detailMonthlyBody")?.classList.toggle("hidden", state.detailMonthlyCollapsed);
+      $("toggleDetailMonthlyCollapseBtn").textContent = state.detailMonthlyCollapsed ? "펼치기" : "접기";
+    });
+
+    const handleMonthlyBarInteract = (e) => {
+      const enableBtn = e.target.closest("[data-enable-monthly-prior]");
+      if (enableBtn && e.type === "click") {
+        const slotHint = e.currentTarget?.id === "mainMonthlySvgWrap" ? "MAIN" : "DETAIL";
+        toggleStockMonthlyPrior(slotHint);
+        return;
+      }
+      const grp = e.target.closest(".monthly-bar-group");
+      if (!grp) return;
+      const slotKey = grp.dataset.monthlySlot;
+      const ym = grp.dataset.monthlyYm;
+      if (!slotKey || !ym || state.selectedMonthlyYm[slotKey] === ym) return;
+      state.selectedMonthlyYm[slotKey] = ym;
+      const wrapEl = $(slotKey === "MAIN" ? "mainMonthlySvgWrap" : "detailMonthlySvgWrap");
+      if (wrapEl) {
+        wrapEl.querySelectorAll(`.monthly-bar-group[data-monthly-slot="${slotKey}"]`).forEach((el) => {
+          el.classList.toggle("selected", el.dataset.monthlyYm === ym);
+        });
+      }
+      renderMonthlyInspector(slotKey, ym);
+    };
+    $("mainMonthlySvgWrap")?.addEventListener("mouseover", handleMonthlyBarInteract);
+    $("mainMonthlySvgWrap")?.addEventListener("click", handleMonthlyBarInteract);
+    $("detailMonthlySvgWrap")?.addEventListener("mouseover", handleMonthlyBarInteract);
+    $("detailMonthlySvgWrap")?.addEventListener("click", handleMonthlyBarInteract);
 
     $("statusFilterGroup").addEventListener("click", (e) => {
       const btn = e.target.closest(".seg-btn");
